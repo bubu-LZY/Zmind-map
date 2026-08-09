@@ -1,0 +1,47 @@
+{
+  "name": "mindmap-mubu",
+  "version": "1.4.8",
+  "description": "该程序由LZY使用AI工具根据思绪思维导图进行二创",
+  "main": "main.js",
+  "author": "local",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.local.zmindmap",
+    "productName": "Zmind-map",
+    "directories": {
+      "output": "release2"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "build/icon2.ico",
+      "build/icon2-512.png",
+      "app2/**/*"
+    ],
+    "win": {
+      "icon": "build/icon2-512.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Zmind-map"
+    }
+  }
+}
