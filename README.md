@@ -2,8 +2,9 @@
 
 基于 [wanglin2/mind-map](https://github.com/wanglin2/mind-map) 二次开发的 Windows 桌面思维导图应用（幕布快捷键风格，全功能免费本地版）。
 
-程序介绍页 [点击访问](https://3341ba1297ab44a2aabcb13f85f18e9d.bj4.agentos-app.net/#ai-generate)
-
+# 程序介绍页
+[点击访问——国内腾讯云 CloudStudio部署](https://3341ba1297ab44a2aabcb13f85f18e9d.bj4.agentos-app.net/#ai-generate)
+[点击访问——github地址](https://bubu-lzy.github.io/Zmind-map/)
 ## 目录结构
 
 ```
