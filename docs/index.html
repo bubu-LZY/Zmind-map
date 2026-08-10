@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zmind-map · AI 驱动的思维导图二创工具</title>
+    <meta name="description" content="Zmind-map 是基于 mind-map 开源项目二次开发的 AI 思维导图工具，完全免费，支持 AI 生成、AI 挖空、艾宾浩斯复习、飞书定时提醒等强大功能。">
+    <style>
+        /* ====== 基础重置 ====== */
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #1c2333;
+            --bg-card: rgba(30, 38, 56, 0.65);
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --accent-1: #7c5cfc;
+            --accent-2: #4dd0e1;
+            --accent-3: #ff7eb6;
+            --accent-green: #3fb950;
+            --accent-orange: #f0883e;
+            --border: rgba(255,255,255,0.08);
+            --border-hover: rgba(124,92,252,0.4);
+            --glow: 0 0 40px rgba(124,92,252,0.15);
+            --radius: 16px;
+            --radius-sm: 10px;
+            --shadow: 0 8px 32px rgba(0,0,0,0.4);
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.7;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* 背景装饰光晕 */
+        body::before {
+            content: '';
+            position: fixed;
+            top: -300px;
+            left: -200px;
+            width: 800px;
+            height: 800px;
+            background: radial-gradient(circle, rgba(124,92,252,0.12), transparent 70%);
+            border-radius: 50%;
+            z-index: 0;
+            pointer-events: none;
+        }
+        body::after {
+            content: '';
+            position: fixed;
+            bottom: -400px;
+            right: -200px;
+            width: 700px;
+            height: 700px;
+            background: radial-gradient(circle, rgba(77,208,225,0.10), transparent 70%);
+            border-radius: 50%;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+        /* ====== 导航栏 ====== */
+        nav {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+            background: rgba(13,17,23,0.8);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border);
+            transition: all 0.3s;
+        }
+        nav .container { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+        .nav-logo { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 8px; text-decoration: none; }
+        .nav-logo span { background: linear-gradient(135deg, var(--accent-1), var(--accent-2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .nav-links { display: flex; gap: 28px; }
+        .nav-links a { color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; transition: color 0.2s; }
+        .nav-links a:hover { color: var(--accent-1); }
+
+        /* ====== Hero 区域 ====== */
+        .hero {
+            min-height: 100vh; display: flex; align-items: center; justify-content: center;
+            text-align: center; padding: 120px 24px 80px; position: relative;
+        }
+        .hero-badge {
+            display: inline-flex; align-items: center; gap: 8px;
+            background: rgba(124,92,252,0.12); border: 1px solid rgba(124,92,252,0.3);
+            padding: 8px 20px; border-radius: 100px; font-size: 0.85rem; color: var(--accent-1);
+            margin-bottom: 28px; animation: fadeInUp 0.6s ease;
+        }
+        .hero-badge::before { content: ''; width: 8px; height: 8px; background: var(--accent-green); border-radius: 50%; box-shadow: 0 0 8px var(--accent-green); }
+
+        .hero h1 {
+            font-size: clamp(2.8rem, 7vw, 5rem); font-weight: 800; line-height: 1.1; margin-bottom: 24px;
+            background: linear-gradient(135deg, #ffffff 0%, #a8b5ff 50%, #4dd0e1 100%);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+            animation: fadeInUp 0.7s ease;
+        }
+        .hero h1 .gradient-text { background: linear-gradient(135deg, var(--accent-1), var(--accent-3)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+
+        .hero-subtitle { font-size: 1.2rem; color: var(--text-secondary); max-width: 640px; margin: 0 auto 40px; animation: fadeInUp 0.8s ease; }
+        .hero-subtitle strong { color: var(--accent-2); font-weight: 600; }
+
+        .hero-buttons { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; animation: fadeInUp 0.9s ease; }
+
+        .btn {
+            display: inline-flex; align-items: center; gap: 10px; padding: 14px 28px;
+            border-radius: 12px; font-size: 0.95rem; font-weight: 600; text-decoration: none;
+            transition: all 0.3s cubic-bezier(0.4,0,0.2,1); border: 1px solid transparent; cursor: pointer;
+        }
+        .btn-primary { background: linear-gradient(135deg, var(--accent-1), #9d7fff); color: #fff; box-shadow: 0 4px 20px rgba(124,92,252,0.35); }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(124,92,252,0.5); }
+        .btn-secondary { background: var(--bg-secondary); color: var(--text-primary); border-color: var(--border); }
+        .btn-secondary:hover { transform: translateY(-2px); border-color: var(--border-hover); background: var(--bg-tertiary); }
+        .btn-ghost { background: transparent; color: var(--accent-2); border-color: rgba(77,208,225,0.3); }
+        .btn-ghost:hover { background: rgba(77,208,225,0.1); border-color: var(--accent-2); transform: translateY(-2px); }
+
+        .hero-stats { display: flex; gap: 48px; justify-content: center; margin-top: 60px; animation: fadeInUp 1s ease; }
+        .hero-stat { text-align: center; }
+        .hero-stat-num { font-size: 1.8rem; font-weight: 800; background: linear-gradient(135deg, var(--accent-1), var(--accent-2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .hero-stat-label { font-size: 0.8rem; color: var(--text-muted); margin-top: 4px; }
+
+        /* ====== 感谢原项目 ====== */
+        .thanks-section { padding: 40px 0; }
+        .thanks-card {
+            background: linear-gradient(135deg, rgba(124,92,252,0.08), rgba(77,208,225,0.06));
+            border: 1px solid var(--border); border-radius: var(--radius); padding: 28px 32px;
+            display: flex; align-items: center; gap: 20px; flex-wrap: wrap; justify-content: center;
+            text-align: center;
+        }
+        .thanks-card .thanks-icon { font-size: 1.8rem; }
+        .thanks-card p { color: var(--text-secondary); font-size: 0.95rem; }
+        .thanks-card a { color: var(--accent-2); text-decoration: none; font-weight: 600; border-bottom: 1px dashed rgba(77,208,225,0.4); transition: all 0.2s; }
+        .thanks-card a:hover { color: var(--accent-1); border-bottom-color: var(--accent-1); }
+
+        /* ====== 章节标题 ====== */
+        .section-header { text-align: center; margin-bottom: 60px; }
+        .section-tag { display: inline-block; font-size: 0.8rem; color: var(--accent-1); letter-spacing: 2px; text-transform: uppercase; font-weight: 600; margin-bottom: 12px; }
+        .section-title { font-size: clamp(2rem, 4vw, 2.8rem); font-weight: 800; margin-bottom: 16px; }
+        .section-desc { color: var(--text-secondary); max-width: 600px; margin: 0 auto; font-size: 1.05rem; }
+
+        /* ====== 功能区 ====== */
+        .features { padding: 80px 0; }
+        .feature-block {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: center;
+            margin-bottom: 100px; position: relative;
+        }
+        .feature-block:last-child { margin-bottom: 0; }
+        .feature-block.reverse .feature-content { order: 2; }
+        .feature-block.reverse .feature-media { order: 1; }
+
+        /* 全宽布局：多图功能区，文字在上居中，图片在下大图展示 */
+        .feature-block.full { grid-template-columns: 1fr; gap: 40px; }
+        .feature-block.full .feature-content { max-width: 760px; margin: 0 auto; text-align: center; }
+        .feature-block.full .feature-content .feature-num { margin: 0 auto 20px; }
+        .feature-block.full .feature-content .feature-icon { text-align: center; }
+        .feature-block.full .feature-content .feature-tags { justify-content: center; }
+        .feature-block.full .feature-media { max-width: 840px; margin: 0 auto; width: 100%; }
+        .feature-block.full .code-block { text-align: left; max-width: 680px; margin: 16px auto 0; }
+        .feature-block.full .media-grid { gap: 20px; }
+        .feature-block.full .media-wrapper img { max-height: 560px; object-fit: contain; }
+
+        .feature-content { animation: fadeInLeft 0.8s ease; }
+        .feature-num {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 40px; height: 40px; border-radius: 10px; font-size: 0.95rem; font-weight: 700;
+            background: rgba(124,92,252,0.15); color: var(--accent-1); margin-bottom: 20px;
+            border: 1px solid rgba(124,92,252,0.3);
+        }
+        .feature-icon { font-size: 2rem; margin-bottom: 16px; display: block; }
+        .feature-title { font-size: 1.8rem; font-weight: 700; margin-bottom: 16px; line-height: 1.3; }
+        .feature-desc { color: var(--text-secondary); font-size: 1rem; margin-bottom: 20px; }
+
+        .feature-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+        .feature-tag { font-size: 0.78rem; padding: 4px 12px; border-radius: 100px; background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); }
+
+        /* 代码块 */
+        .code-block {
+            background: #0a0e16; border: 1px solid var(--border); border-radius: var(--radius-sm);
+            padding: 16px 20px; margin-top: 16px; overflow-x: auto; position: relative;
+        }
+        .code-block::before {
+            content: ''; position: absolute; top: 14px; left: 14px;
+            width: 12px; height: 12px; background: #ff5f57; border-radius: 50%;
+            box-shadow: 18px 0 #febc2e, 36px 0 #28c840;
+        }
+        .code-block pre { margin-top: 24px; font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace; font-size: 0.82rem; line-height: 1.6; color: #c9d1d9; }
+        .code-block .c-key { color: #ff7b72; }
+        .code-block .c-str { color: #a5d6ff; }
+        .code-block .c-fn { color: #d2a8ff; }
+        .code-block .c-com { color: #6e7681; font-style: italic; }
+        .code-block .c-num { color: #79c0ff; }
+
+        /* 媒体展示 */
+        .feature-media { animation: fadeInRight 0.8s ease; }
+        .media-wrapper {
+            background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+            padding: 12px; box-shadow: var(--shadow); backdrop-filter: blur(10px);
+            transition: all 0.3s; position: relative; overflow: hidden;
+        }
+        .media-wrapper:hover { border-color: var(--border-hover); box-shadow: 0 8px 40px rgba(124,92,252,0.2); }
+        .media-wrapper img { width: 100%; border-radius: var(--radius-sm); display: block; }
+        .media-caption { font-size: 0.8rem; color: var(--text-muted); text-align: center; padding: 10px 0 4px; }
+
+        .media-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+        .media-grid.two { grid-template-columns: 1fr 1fr; }
+
+        /* ====== 免费强调区 ====== */
+        .free-banner {
+            text-align: center; padding: 60px 24px; margin: 40px 0;
+            background: linear-gradient(135deg, rgba(63,185,80,0.08), rgba(77,208,225,0.06));
+            border: 1px solid rgba(63,185,80,0.2); border-radius: var(--radius);
+        }
+        .free-banner .free-icon { font-size: 3rem; margin-bottom: 16px; }
+        .free-banner h3 { font-size: 2rem; margin-bottom: 12px; background: linear-gradient(135deg, var(--accent-green), var(--accent-2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .free-banner p { color: var(--text-secondary); max-width: 500px; margin: 0 auto; }
+
+        /* ====== Footer ====== */
+        footer { padding: 60px 0 40px; border-top: 1px solid var(--border); margin-top: 40px; }
+        .footer-content { text-align: center; }
+        .footer-logo { font-size: 1.4rem; font-weight: 700; margin-bottom: 16px; }
+        .footer-logo span { background: linear-gradient(135deg, var(--accent-1), var(--accent-2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .footer-links { display: flex; gap: 24px; justify-content: center; margin-bottom: 24px; flex-wrap: wrap; }
+        .footer-links a { color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; transition: color 0.2s; }
+        .footer-links a:hover { color: var(--accent-1); }
+        .footer-copy { color: var(--text-muted); font-size: 0.82rem; }
+        .footer-thanks { margin-top: 16px; color: var(--text-muted); font-size: 0.82rem; }
+        .footer-thanks a { color: var(--accent-2); text-decoration: none; }
+
+        /* ====== 动画 ====== */
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeInLeft { from { opacity: 0; transform: translateX(-30px); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes fadeInRight { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: translateX(0); } }
+
+        .reveal { opacity: 0; transform: translateY(40px); transition: all 0.7s cubic-bezier(0.4,0,0.2,1); }
+        .reveal.active { opacity: 1; transform: translateY(0); }
+
+        /* 滚动条 */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-primary); }
+        ::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--accent-1); }
+
+        /* ====== 响应式 ====== */
+        @media (max-width: 900px) {
+            .nav-links { display: none; }
+            .feature-block { grid-template-columns: 1fr; gap: 32px; margin-bottom: 70px; }
+            .feature-block.reverse .feature-content { order: 1; }
+            .feature-block.reverse .feature-media { order: 2; }
+            .media-grid.two { grid-template-columns: 1fr; }
+            .hero-stats { gap: 24px; flex-wrap: wrap; }
+            .hero-buttons { flex-direction: column; align-items: center; }
+            .btn { width: 100%; max-width: 320px; justify-content: center; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ====== 导航栏 ====== -->
+<nav>
+    <div class="container">
+        <a href="#top" class="nav-logo">🌿 <span>Zmind-map</span></a>
+        <div class="nav-links">
+            <a href="#features">功能特性</a>
+            <a href="#ai-generate">AI 生成</a>
+            <a href="#review">复习模式</a>
+            <a href="#original">致谢</a>
+            <a href="https://github.com/bubu-LZY/Zmind-map/" target="_blank">GitHub</a>
+        </div>
+    </div>
+</nav>
+
+<!-- ====== Hero ====== -->
+<section class="hero" id="top">
+    <div class="container">
+        <div class="hero-badge">基于开源项目二次开发 · 完全免费</div>
+        <h1><span class="gradient-text">Zmind-map</span></h1>
+        <p class="hero-subtitle">
+            一款 <strong>AI 驱动</strong>的思维导图二创工具，集成 AI 生成、AI 挖空、艾宾浩斯复习曲线、飞书定时提醒等学习增强功能，让思维导图成为你的 <strong>高效学习引擎</strong>。
+        </p>
+        <div class="hero-buttons">
+            <a href="https://github.com/bubu-LZY/Zmind-map/releases" target="_blank" class="btn btn-primary">
+                ⬇ 下载 EXE 程序
+            </a>
+            <a href="https://github.com/bubu-LZY/Zmind-map/" target="_blank" class="btn btn-secondary">
+                🐙 访问 GitHub 项目
+            </a>
+            <a href="https://github.com/wanglin2/mind-map" target="_blank" class="btn btn-ghost">
+                🌿 思维导图源项目
+            </a>
+        </div>
+        <div class="hero-stats">
+            <div class="hero-stat">
+                <div class="hero-stat-num">8+</div>
+                <div class="hero-stat-label">核心功能</div>
+            </div>
+            <div class="hero-stat">
+                <div class="hero-stat-num">¥0</div>
+                <div class="hero-stat-label">完全免费</div>
+            </div>
+            <div class="hero-stat">
+                <div class="hero-stat-num">100%</div>
+                <div class="hero-stat-label">开源二创</div>
+            </div>
+            <div class="hero-stat">
+                <div class="hero-stat-num">AI</div>
+                <div class="hero-stat-label">智能驱动</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ====== 感谢原项目 ====== -->
+<section class="thanks-section" id="original">
+    <div class="container">
+        <div class="thanks-card reveal">
+            <span class="thanks-icon">🙏</span>
+            <p>
+                本项目基于 <a href="https://github.com/wanglin2/mind-map" target="_blank">wanglin2/mind-map</a> 开源项目二次开发，在此特别感谢原作者 <strong>@wanglin2</strong> 的杰出贡献与开源精神。Zmind-map 在原项目基础上扩展了 AI 生成、复习模式、定时提醒等学习增强功能。
+            </p>
+        </div>
+    </div>
+</section>
+
+<!-- ====== 免费强调 ====== -->
+<section class="features" id="features">
+    <div class="container">
+        <div class="free-banner reveal">
+            <div class="free-icon">🎁</div>
+            <h3>完全免费 · 永久免费</h3>
+            <p>Zmind-map 承诺所有功能<strong style="color:var(--accent-green)">完全免费</strong>，无任何付费墙、无广告、无功能限制。所有代码开源，欢迎自由使用与二次创作。</p>
+        </div>
+
+        <div class="section-header reveal">
+            <span class="section-tag">✨ Features</span>
+            <h2 class="section-title">强大功能，重新定义思维导图</h2>
+            <p class="section-desc">从 AI 生成到科学复习，从多端访问到悬浮引用，Zmind-map 为你的学习工作流提供全方位增强。</p>
+        </div>
+
+        <!-- 功能1: AI 生成思维导图 -->
+        <div class="feature-block full" id="ai-generate">
+            <div class="feature-content reveal">
+                <div class="feature-num">01</div>
+                <span class="feature-icon">🤖</span>
+                <h3 class="feature-title">AI 生成思维导图</h3>
+                <p class="feature-desc">
+                    接入 AI API 后，只需输入主题或文本内容，即可<strong style="color:var(--accent-1)">一键生成结构化思维导图</strong>。支持两种模式：
+                </p>
+                <div class="feature-tags">
+                    <span class="feature-tag">AI 生成</span>
+                    <span class="feature-tag">AI 续写</span>
+                    <span class="feature-tag">背诵改写</span>
+                    <span class="feature-tag">API 接入</span>
+                </div>
+                <p class="feature-desc">
+                    <strong>生成模式：</strong>根据输入主题从零生成完整思维导图结构。<br>
+                    <strong>续写模式：</strong>在已有节点基础上，让 AI 智能补充和扩展内容。<br>
+                    <strong>背诵改写：</strong>将内容改写为便于记忆的背诵版本。
+                </p>
+                <div class="code-block">
+<pre><span class="c-com">// 接入 AI API 快速生成思维导图</span>
+<span class="c-key">const</span> <span class="c-fn">generateMindMap</span> = <span class="c-key">async</span> (prompt) => {
+  <span class="c-key">const</span> response = <span class="c-key">await</span> <span class="c-fn">callAI</span>({
+    model: <span class="c-str">"gpt-4"</span>,
+    prompt: prompt,
+    mode: <span class="c-str">"generate"</span> <span class="c-com">// 或 "continue" 续写</span>
+  });
+  <span class="c-key">return</span> <span class="c-fn">parseToNodes</span>(response);
+};</pre>
+                </div>
+            </div>
+            <div class="feature-media reveal">
+                <div class="media-grid">
+                    <div class="media-wrapper">
+                        <img src="images/AI生成思维导图.gif" alt="AI生成思维导图演示" loading="lazy">
+                        <div class="media-caption">AI 生成 — 输入主题快速生成思维导图</div>
+                    </div>
+                    <div class="media-wrapper">
+                        <img src="images/AI续写.gif" alt="AI续写演示" loading="lazy">
+                        <div class="media-caption">AI 续写 — 在已有节点基础上智能扩展</div>
+                    </div>
+                    <div class="media-wrapper">
+                        <img src="images/AI生成思维导图_背诵改写.gif" alt="AI背诵改写演示" loading="lazy">
+                        <div class="media-caption">背诵改写 — 生成便于记忆的背诵版本</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 功能2: AI 挖空 -->
+        <div class="feature-block reverse" id="ai-blank">
+            <div class="feature-content reveal">
+                <div class="feature-num">02</div>
+                <span class="feature-icon">🔍</span>
+                <h3 class="feature-title">AI 挖空 · 复习提效</h3>
+                <p class="feature-desc">
+                    AI 智能分析思维导图内容，自动<strong style="color:var(--accent-2)">挖空关键知识点</strong>，生成填空式复习题。帮助你快速检测记忆盲区，让复习更有针对性、更高效。
+                </p>
+                <div class="feature-tags">
+                    <span class="feature-tag">智能挖空</span>
+                    <span class="feature-tag">填空复习</span>
+                    <span class="feature-tag">记忆检测</span>
+                </div>
+                <div class="code-block">
+<pre><span class="c-com">// AI 挖空 - 自动生成填空节点</span>
+<span class="c-key">const</span> <span class="c-fn">aiBlank</span> = (node) => {
+  <span class="c-key">const</span> keywords = <span class="c-fn">extractKeywords</span>(node.text);
+  <span class="c-key">return</span> keywords.<span class="c-fn">map</span>(kw => ({
+    original: kw,
+    blank: <span class="c-str">"＿＿＿"</span>,
+    hint: <span class="c-fn">generateHint</span>(kw)
+  }));
+};</pre>
+                </div>
+            </div>
+            <div class="feature-media reveal">
+                <div class="media-wrapper">
+                    <img src="images/AI挖空.gif" alt="AI挖空功能演示" loading="lazy">
+                    <div class="media-caption">AI 挖空 — 智能生成填空复习</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 功能3: 艾宾浩斯遗忘曲线 -->
+        <div class="feature-block full" id="review">
+            <div class="feature-content reveal">
+                <div class="feature-num">03</div>
+                <span class="feature-icon">📊</span>
+                <h3 class="feature-title">艾宾浩斯遗忘曲线</h3>
+                <p class="feature-desc">
+                    基于<strong style="color:var(--accent-3)">艾宾浩斯遗忘曲线</strong>科学理论，快速添加复习任务、定制个性化复习计划。系统自动按照记忆周期提醒你复习，用最少的次数记住最多的知识。
+                </p>
+                <div class="feature-tags">
+                    <span class="feature-tag">科学复习</span>
+                    <span class="feature-tag">遗忘曲线</span>
+                    <span class="feature-tag">任务管理</span>
+                    <span class="feature-tag">定制计划</span>
+                </div>
+                <div class="code-block">
+<pre><span class="c-com">// 艾宾浩斯复习间隔（天）</span>
+<span class="c-key">const</span> reviewIntervals = [
+  <span class="c-num">1</span>, <span class="c-num">2</span>, <span class="c-num">4</span>, <span class="c-num">7</span>, <span class="c-num">15</span>, <span class="c-num">30</span>
+];
+<span class="c-com">// 自动生成复习任务计划</span>
+<span class="c-fn">scheduleReview</span>(task, reviewIntervals);</pre>
+                </div>
+            </div>
+            <div class="feature-media reveal">
+                <div class="media-grid">
+                    <div class="media-wrapper">
+                        <img src="images/复习模式——艾宾浩斯.gif" alt="复习模式艾宾浩斯演示" loading="lazy">
+                        <div class="media-caption">复习模式 — 艾宾浩斯遗忘曲线</div>
+                    </div>
+                    <div class="media-wrapper">
+                        <img src="images/艾宾浩斯复习模式（任务总览）.png" alt="艾宾浩斯任务总览" loading="lazy">
+                        <div class="media-caption">任务总览 — 查看所有复习计划</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 功能4: 定时提醒 -->
+        <div class="feature-block reverse" id="reminder">
+            <div class="feature-content reveal">
+                <div class="feature-num">04</div>
+                <span class="feature-icon">🔔</span>
+                <h3 class="feature-title">飞书定时提醒</h3>
+                <p class="feature-desc">
+                    配置<strong style="color:var(--accent-orange)">飞书 Webhook</strong>后，系统根据艾宾浩斯遗忘曲线生成的复习计划，自动在对应时间点发送飞书消息提醒。再也不怕忘记复习，让学习节奏自动运转。
+                </p>
+                <div class="feature-tags">
+                    <span class="feature-tag">飞书 Webhook</span>
+                    <span class="feature-tag">定时提醒</span>
+                    <span class="feature-tag">自动推送</span>
+                </div>
+                <div class="code-block">
+<pre><span class="c-com">// 配置飞书 Webhook 定时提醒</span>
+<span class="c-key">const</span> feishuHook = <span class="c-str">"https://open.feishu.cn/open-apis/bot/v2/hook/xxx"</span>;
+
+<span class="c-fn">sendReminder</span>(feishuHook, {
+  task: <span class="c-str">"复习：数据结构第三章"</span>,
+  reviewDate: <span class="c-fn">getNextReviewDate</span>(),
+  interval: <span class="c-str">"第2次复习（+2天）"</span>
+});</pre>
+                </div>
+            </div>
+            <div class="feature-media reveal">
+                <div class="media-wrapper">
+                    <img src="images/飞书定时提醒复习.gif" alt="飞书定时提醒演示" loading="lazy">
+                    <div class="media-caption">飞书定时提醒 — 自动推送复习通知</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 功能5: 前端端口开放 -->
+        <div class="feature-block" id="port">
+            <div class="feature-content reveal">
+                <div class="feature-num">05</div>
+                <span class="feature-icon">🌐</span>
+                <h3 class="feature-title">前端端口开放（8080）</h3>
+                <p class="feature-desc">
+                    内置 Web 服务器，开放 <strong style="color:var(--accent-2)">8080 端口</strong>。局域网内其他设备可直接访问你的思维导图；配合内网穿透工具，还能实现<strong>远程随时随地访问</strong>。多端同步，无缝衔接。
+                </p>
+                <div class="feature-tags">
+                    <span class="feature-tag">端口 8080</span>
+                    <span class="feature-tag">局域网访问</span>
+                    <span class="feature-tag">内网穿透</span>
+                    <span class="feature-tag">多端同步</span>
+                </div>
+                <div class="code-block">
+<pre><span class="c-com"># 启动前端服务，开放 8080 端口</span>
+<span class="c-key">$</span> npm run serve
+
+<span class="c-com"># 局域网访问</span>
+http://<span class="c-str">192.168.x.x</span>:<span class="c-num">8080</span>
+
+<span class="c-com"># 配合内网穿透远程访问</span>
+<span class="c-key">$</span> frpc expose <span class="c-num">8080</span> --domain zmind</pre>
+                </div>
+            </div>
+            <div class="feature-media reveal">
+                <div class="media-wrapper">
+                    <img src="images/前端接口开放.PNG" alt="前端端口开放演示" loading="lazy">
+                    <div class="media-caption">前端端口开放 — 局域网/内网穿透访问</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 功能6: AI 对话 -->
+        <div class="feature-block reverse" id="ai-chat">
+            <div class="feature-content reveal">
+                <div class="feature-num">06</div>
+                <span class="feature-icon">💬</span>
+                <h3 class="feature-title">AI 对话</h3>
+                <p class="feature-desc">
+                    内置 AI 对话窗口，支持<strong style="color:var(--accent-1)">快速添加节点到对话框</strong>或<strong>快速同步整个文档到对话框</strong>进行询问。无需切换工具，在思维导图中直接与 AI 对话，让知识获取更流畅。
+                </p>
+                <div class="feature-tags">
+                    <span class="feature-tag">AI 对话</span>
+                    <span class="feature-tag">节点同步</span>
+                    <span class="feature-tag">文档问答</span>
+                </div>
+                <div class="code-block">
+<pre><span class="c-com">// 将节点/文档快速同步到 AI 对话框</span>
+<span class="c-fn">sendToChat</span>({
+  type: <span class="c-str">"node"</span>,        <span class="c-com">// 或 "document"</span>
+  content: node.text,
+  context: <span class="c-fn">getDocumentContext</span>()
+});
+
+<span class="c-com">// AI 在对话上下文中回答</span>
+<span class="c-key">await</span> <span class="c-fn">chatWithAI</span>(question, context);</pre>
+                </div>
+            </div>
+            <div class="feature-media reveal">
+                <div class="media-wrapper">
+                    <img src="images/AI对话.gif" alt="AI对话功能演示" loading="lazy">
+                    <div class="media-caption">AI 对话 — 节点/文档快速同步询问</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 功能7: 悬浮引用 -->
+        <div class="feature-block full" id="float-ref">
+            <div class="feature-content reveal">
+                <div class="feature-num">07</div>
+                <span class="feature-icon">📌</span>
+                <h3 class="feature-title">悬浮引用</h3>
+                <p class="feature-desc">
+                    在文档编辑中，鼠标悬浮即可<strong style="color:var(--accent-3)">快速显示对应思维导图和节点</strong>。无需跳转页面，文档与思维导图联动引用，让知识结构一目了然。
+                </p>
+                <div class="feature-tags">
+                    <span class="feature-tag">悬浮引用</span>
+                    <span class="feature-tag">文档联动</span>
+                    <span class="feature-tag">快速预览</span>
+                    <span class="feature-tag">节点引用</span>
+                </div>
+                <div class="code-block">
+<pre><span class="c-com">// 文档内悬浮引用思维导图节点</span>
+<span class="c-fn">onHover</span>(docElement, <span class="c-key">async</span> () => {
+  <span class="c-key">const</span> node = <span class="c-fn">findLinkedNode</span>(docElement);
+  <span class="c-fn">showFloatPanel</span>({
+    target: docElement,
+    mindmap: <span class="c-fn">getMindMapSnapshot</span>(),
+    node: node
+  });
+});</pre>
+                </div>
+            </div>
+            <div class="feature-media reveal">
+                <div class="media-grid">
+                    <div class="media-wrapper">
+                        <img src="images/引用文件.gif" alt="悬浮引用文件演示" loading="lazy">
+                        <div class="media-caption">引用文件 — 文档内悬浮显示对应文件</div>
+                    </div>
+                    <div class="media-wrapper">
+                        <img src="images/引用节点.gif" alt="悬浮引用节点演示" loading="lazy">
+                        <div class="media-caption">引用节点 — 悬浮显示对应思维导图节点</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</section>
+
+<!-- ====== Footer ====== -->
+<footer>
+    <div class="container">
+        <div class="footer-content">
+            <div class="footer-logo">🌿 <span>Zmind-map</span></div>
+            <div class="footer-links">
+                <a href="https://github.com/bubu-LZY/Zmind-map/releases" target="_blank">下载 EXE</a>
+                <a href="https://github.com/bubu-LZY/Zmind-map/" target="_blank">GitHub 仓库</a>
+                <a href="https://github.com/bubu-LZY/Zmind-map/issues" target="_blank">问题反馈</a>
+                <a href="https://github.com/wanglin2/mind-map" target="_blank">原项目 mind-map</a>
+            </div>
+            <p class="footer-copy">© 2024-2026 Zmind-map · MIT License · 由 bubu-LZY 二次开发</p>
+            <p class="footer-thanks">
+                🙏 特别感谢原项目 <a href="https://github.com/wanglin2/mind-map" target="_blank">@wanglin2/mind-map</a> 的开源贡献
+            </p>
+        </div>
+    </div>
+</footer>
+
+<script>
+    // 滚动动画 - IntersectionObserver
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.classList.add('active');
+            }
+        });
+    }, { threshold: 0.1, rootMargin: '0px 0px -60px 0px' });
+
+    document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+    // 导航栏滚动效果
+    const nav = document.querySelector('nav');
+    window.addEventListener('scroll', () => {
+        if (window.scrollY > 50) {
+            nav.style.height = '56px';
+            nav.style.boxShadow = '0 4px 20px rgba(0,0,0,0.3)';
+        } else {
+            nav.style.height = '64px';
+            nav.style.boxShadow = 'none';
+        }
+    });
+</script>
+
+</body>
+</html>
