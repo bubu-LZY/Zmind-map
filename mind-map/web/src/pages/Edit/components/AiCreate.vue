@@ -257,6 +257,8 @@ export default {
       // 保存AI生成前的状态到历史记录，并暂停历史收集
       this.mindMap.command.originAddHistory()
       this.mindMap.command.pause()
+      // 二开：保存生成前的数据，以便生成失败时恢复（setData(null) 会清空当前数据）
+      this.mindMapDataCache = JSON.stringify(this.mindMap.getData())
       this.mindMap.setData(null)
       this.aiInstance.request(
         {
@@ -279,11 +281,30 @@ export default {
         content => {
           this.aiCreatingContent = content
           this.resetOnAiCreatingStop()
+          // 如果渲染循环从未启动（例如推理模型全程输出 <think> 标签），手动触发最终渲染
+          if (!this.isLoopRendering && this.aiCreatingContent.trim()) {
+            this.loopRenderOnAiCreating()
+          }
         },
-        () => {
+        error => {
           this.resetOnAiCreatingStop()
+          // 二开：生成失败时恢复生成前的数据（setData(null) 已清空了原数据）
+          if (this.mindMapDataCache) {
+            try {
+              const cachedData = JSON.parse(this.mindMapDataCache)
+              this.mindMap.setData(cachedData)
+            } catch (e) {
+              console.error('[AI生成思维导图] 恢复数据失败:', e)
+            }
+          }
           this.resetOnRenderEnd()
-          this.$message.error(this.$t('ai.generationFailed'))
+          const errMsg = (error && error.message) || ''
+          console.error('[AI生成思维导图] 错误:', error)
+          if (errMsg) {
+            this.$message.error('生成失败：' + errMsg)
+          } else {
+            this.$message.error(this.$t('ai.generationFailed'))
+          }
         }
       )
     },
@@ -319,11 +340,34 @@ export default {
       this.$message.success(this.$t('ai.stoppedGenerating'))
     },
 
+    // 去除推理模型的 <think> 标签内容，避免干扰 markdown 解析
+    stripThinkTags(content) {
+      if (!content) return ''
+      // 移除已闭合的 <think>...</think>
+      let result = content.replace(/<think>[\s\S]*?<\/think>/gi, '')
+      // 移除未闭合的 <think> 标签（流式输出中可能还没闭合）
+      if (result.includes('<think>')) {
+        const thinkIdx = result.indexOf('<think>')
+        // 如果有未闭合的 <think>，截断其后的内容（都是推理内容，不是实际输出）
+        result = result.substring(0, thinkIdx)
+      }
+      return result.trim()
+    },
+
     // 轮询进行渲染
     loopRenderOnAiCreating() {
       if (!this.aiCreatingContent.trim() || this.isLoopRendering) return
       this.isLoopRendering = true
-      const treeData = transformMarkdownTo(this.aiCreatingContent)
+      const cleanContent = this.stripThinkTags(this.aiCreatingContent)
+      if (!cleanContent.trim()) {
+        this.isLoopRendering = false
+        return
+      }
+      const treeData = transformMarkdownTo(cleanContent)
+      if (!treeData) {
+        this.isLoopRendering = false
+        return
+      }
       this.addUid(treeData)
       let lastTreeData = JSON.stringify(treeData)
 
@@ -339,7 +383,20 @@ export default {
           return
         }
 
-        const treeData = transformMarkdownTo(this.aiCreatingContent)
+        const cleanContent = this.stripThinkTags(this.aiCreatingContent)
+        if (!cleanContent.trim()) {
+          setTimeout(() => {
+            onRenderEnd()
+          }, 500)
+          return
+        }
+        const treeData = transformMarkdownTo(cleanContent)
+        if (!treeData) {
+          setTimeout(() => {
+            onRenderEnd()
+          }, 500)
+          return
+        }
         this.addUid(treeData)
         // 正在生成中
         if (this.isAiCreating) {
@@ -386,8 +443,10 @@ export default {
 
     // 给AI生成的数据添加uid
     addUid(data) {
+      if (!data) return
       const checkRepeatUidMap = {}
       const walk = (node, pUid = '') => {
+        if (!node) return
         if (!node.data) {
           node.data = {}
         }
@@ -505,12 +564,31 @@ export default {
             this.aiCreatingContent = content
             this.resetOnAiCreatingStop()
             this.resetAiCreatePartDialog()
+            // 如果渲染循环从未启动（例如推理模型全程输出 <think> 标签），手动触发最终渲染
+            if (!this.isLoopRendering && this.aiCreatingContent.trim()) {
+              this.loopRenderOnAiCreatingPart()
+            }
           },
-          () => {
+          error => {
             this.resetOnAiCreatingStop()
             this.resetAiCreatePartDialog()
+            // 二开：续写失败时恢复生成前的数据
+            if (this.mindMapDataCache) {
+              try {
+                const cachedData = JSON.parse(this.mindMapDataCache)
+                this.mindMap.setData(cachedData)
+              } catch (e) {
+                console.error('[AI续写] 恢复数据失败:', e)
+              }
+            }
             this.resetOnRenderEnd()
-            this.$message.error(this.$t('ai.generationFailed'))
+            const errMsg = (error && error.message) || ''
+            console.error('[AI续写] 错误:', error)
+            if (errMsg) {
+              this.$message.error('生成失败：' + errMsg)
+            } else {
+              this.$message.error(this.$t('ai.generationFailed'))
+            }
           }
         )
       } catch (error) {
@@ -543,7 +621,16 @@ export default {
     loopRenderOnAiCreatingPart() {
       if (!this.aiCreatingContent.trim() || this.isLoopRendering) return
       this.isLoopRendering = true
-      const partData = transformMarkdownTo(this.aiCreatingContent)
+      const cleanContent = this.stripThinkTags(this.aiCreatingContent)
+      if (!cleanContent.trim()) {
+        this.isLoopRendering = false
+        return
+      }
+      const partData = transformMarkdownTo(cleanContent)
+      if (!partData) {
+        this.isLoopRendering = false
+        return
+      }
       this.addUid(partData)
       let lastPartData = JSON.stringify(partData)
       const treeData = this.addToTargetNode(partData.children || [])
@@ -560,7 +647,20 @@ export default {
           return
         }
 
-        const partData = transformMarkdownTo(this.aiCreatingContent)
+        const cleanContent = this.stripThinkTags(this.aiCreatingContent)
+        if (!cleanContent.trim()) {
+          setTimeout(() => {
+            onRenderEnd()
+          }, 500)
+          return
+        }
+        const partData = transformMarkdownTo(cleanContent)
+        if (!partData) {
+          setTimeout(() => {
+            onRenderEnd()
+          }, 500)
+          return
+        }
         this.addUid(partData)
         const treeData = this.addToTargetNode(partData.children || [])
 

@@ -167,19 +167,39 @@ ${JSON.stringify(nodes)}
 const parseAiResponse = content => {
   if (!content || typeof content !== 'string') return []
   let text = content.trim()
+  console.log('[AI挖空] 原始响应内容:', text.substring(0, 500))
   // 移除推理模型的 <think>...</think> 标签（DeepSeek-R1、Qwen-QwQ 等）
   text = text.replace(/<think>[\s\S]*?<\/think>/gi, '')
-  // 移除可能的 markdown 代码块标记
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '')
+  // 处理未闭合的 <think> 标签：保留 <think> 之后的 JSON 内容
+  if (text.includes('<think>')) {
+    const afterThink = text.split('<think>')
+    // 取 <think> 之后包含 JSON 的部分
+    const afterContent = afterThink[afterThink.length - 1] || ''
+    const jsonStart = afterContent.search(/[{\[]/)
+    if (jsonStart >= 0) {
+      text = afterContent.substring(jsonStart)
+    } else {
+      text = ''
+    }
+  }
+  // 移除可能的 markdown 代码块标记（全局移除，不限位置）
+  text = text.replace(/```(?:json)?\s*/gi, '').replace(/```\s*/g, '')
   // 移除可能的变量赋值前缀（如 "cloze_result = ..."）
   text = text.replace(/^[a-zA-Z_]\w*\s*=\s*/, '')
   text = text.trim()
-  try {
-    let parsed = JSON.parse(text)
-    // 支持 {"results": [...]} 格式和直接数组格式
+  // 从解析结果中提取 clozeList，支持多种嵌套格式
+  const extractResults = parsed => {
     if (Array.isArray(parsed)) return parsed
     if (parsed && Array.isArray(parsed.results)) return parsed.results
+    // 支持 {"cloze_result": {"results": [...]}} 嵌套格式
+    if (parsed && parsed.cloze_result) return extractResults(parsed.cloze_result)
+    // 支持 {"data": {"results": [...]}} 嵌套格式
+    if (parsed && parsed.data) return extractResults(parsed.data)
     return []
+  }
+  try {
+    let parsed = JSON.parse(text)
+    return extractResults(parsed)
   } catch (e) {
     // 尝试提取 JSON 对象（取最后一个匹配，避免推理内容中的 { 干扰）
     const objMatches = text.match(/\{[\s\S]*\}/g)
@@ -188,7 +208,8 @@ const parseAiResponse = content => {
       for (let i = objMatches.length - 1; i >= 0; i--) {
         try {
           const parsed = JSON.parse(objMatches[i])
-          if (parsed && Array.isArray(parsed.results)) return parsed.results
+          const results = extractResults(parsed)
+          if (results.length > 0) return results
         } catch (e2) {}
       }
     }
@@ -200,7 +221,7 @@ const parseAiResponse = content => {
         if (Array.isArray(parsed)) return parsed
       } catch (e3) {}
     }
-    console.error('解析AI挖空响应失败:', e, text)
+    console.error('[AI挖空] 解析AI挖空响应失败:', e, '清理后文本:', text.substring(0, 500))
     return []
   }
 }
@@ -336,6 +357,7 @@ const callAiForCloze = (config, nodes, mode, onProgress) => {
         if (onProgress) onProgress(content)
       },
       content => {
+        console.log('[AI挖空] AI返回完整内容长度:', content ? content.length : 0)
         resolve(parseAiResponse(content))
       },
       error => {
