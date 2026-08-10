@@ -4,7 +4,7 @@
 
 [![Platform](https://img.shields.io/badge/platform-Windows-blue.svg)](https://github.com/bubu-LZY/Zmind-map)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./mind-map/LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.4.47-orange.svg)](./UPDATE_LOG.md)
+[![Version](https://img.shields.io/badge/version-v1.4.48-orange.svg)](./UPDATE_LOG.md)
 
 ---
 
@@ -225,7 +225,7 @@ env -u ELECTRON_RUN_AS_NODE node_modules/electron-builder/out/cli/cli.js --win -
 
 ## 📜 更新日志
 
-当前版本 **v1.4.47**（2026-08-10）。主要里程碑：
+当前版本 **v1.4.48**（2026-08-10）。主要里程碑：
 
 - 挖空系统重写为 DOM API，节点级显隐
 - AI 智能挖空 / 背诵改写 / AI 对话增强（重新询问、切换模型、一键复制、图片粘贴）
