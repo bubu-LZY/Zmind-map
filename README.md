@@ -2,7 +2,7 @@
 
 基于 [wanglin2/mind-map](https://github.com/wanglin2/mind-map) 二次开发的 Windows 桌面思维导图应用（幕布快捷键风格，全功能免费本地版）。
 
-当前版本：v1.4.48
+程序介绍页 [点击访问](https://3341ba1297ab44a2aabcb13f85f18e9d.bj4.agentos-app.net/#ai-generate)
 
 ## 目录结构
 
