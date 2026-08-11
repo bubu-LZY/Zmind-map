@@ -521,7 +521,7 @@ export default {
           // 清除消息中的 loading 提示
           if (!md) md = new MarkdownIt()
           this.chatList.forEach(msg => {
-            if (msg.type === 'ai' && msg.content && msg.content.includes('toolExecutingHint')) {
+            if (msg.type === 'ai' && msg.content && (msg.content.includes('toolExecutingHint') || msg.content.includes('toolStatusList'))) {
               const cleanText = this.stripToolCalls(this.stripMemoryTags(msg.content_raw || ''))
               msg.content = cleanText ? md.render(cleanText) : ''
             }
@@ -1047,12 +1047,18 @@ export default {
         '60. <<TOOL:add_node_tag|node=节点文本|tag=标签内容>> - 为指定节点添加标签',
         '61. <<TOOL:add_node_icon|node=节点文本|icon=图标名>> - 为指定节点添加图标（icon可选：priority优先级/favorite收藏/flag旗帜/star星星等）',
         '',
+        '=== 记忆系统工具 ===',
+        '62. <<TOOL:query_memory>> - 查询当前文档的AI记忆库中存储的所有记忆内容（当用户问"记忆文件里有什么"、"你记得什么"等问题时使用此工具，不要去搜索思维导图文件）',
+        '63. <<TOOL:add_memory|content=要记住的内容>> - 将指定内容添加到AI记忆库中（当用户说"记住这个"、"添加到记忆"时使用此工具，不要去操作思维导图节点）',
+        '',
         '记忆指令：',
         '请在每次回复的末尾，用以下格式总结本次对话的关键信息（用户不会看到此部分）：',
         '<<MEMORY>>用一句话概括的关键事实或用户偏好<</MEMORY>>',
         '',
-        '使用规则：',
+        '⚠️ 关键使用规则（必须严格遵守）：',
         '- 每个工具调用必须独占一行，格式严格为 <<TOOL:工具名|参数1=值1|参数2=值2>>',
+        '- 【最重要】当需要查询信息时，你必须直接输出工具调用格式 <<TOOL:...>>，而不是说"我来帮你查一下"或"让我搜索一下"等话语。不要描述你要做什么，直接做！',
+        '- 工具调用后不需要再解释你在调用工具，系统会自动识别并执行',
         '- 可以在一条回复中同时调用多个工具（每行一个），系统会批量执行以提高效率',
         '- 工具调用后，系统会执行操作并将结果返回给你，你必须基于结果继续回复用户的问题',
         '- 如果引用的节点之间没有明确层级关系，建议主动调用 query_hierarchy 获取更完整上下文',
@@ -1061,6 +1067,17 @@ export default {
         '- 颜色值支持十六进制（如#FF5733）或英文颜色名（如red、blue、green）',
         '- 导出工具的 content 参数可以包含多行内容（换行用 \\n 表示）',
         '- 当用户要求对某节点及其子节点进行操作时，先调用query_children获取所有子节点，再批量操作',
+        '- 当用户提到"记忆"相关操作时，使用 query_memory 或 add_memory 工具，不要搜索思维导图文件',
+        '',
+        '正确示例：',
+        '用户问："当前思维导图的根节点有哪些子节点？"',
+        '你的回复应该直接是：',
+        '<<TOOL:query_children|node=根节点>>',
+        '',
+        '错误示例（不要这样做）：',
+        '用户问："当前思维导图的根节点有哪些子节点？"',
+        '错误回复："我来帮你查一下根节点的子节点。"（❌ 没有输出工具调用格式）',
+        '错误回复："让我搜索一下..."（❌ 只说了要做但没有实际调用）',
         ''
       ].join('\n')
     },
@@ -1199,7 +1216,10 @@ export default {
         expand_to_level: `展开到第${p.level || '2'}级`,
         // 节点标记
         add_node_tag: `为节点「${p.node || ''}」添加标签「${p.tag || ''}」`,
-        add_node_icon: `为节点「${p.node || ''}」添加图标「${p.icon || ''}」`
+        add_node_icon: `为节点「${p.node || ''}」添加图标「${p.icon || ''}」`,
+        // 记忆系统
+        query_memory: `查询AI记忆库中的所有记忆内容`,
+        add_memory: `将内容添加到AI记忆库：「${(p.content || '').substring(0, 30)}${(p.content || '').length > 30 ? '...' : ''}」`
       }
       return descriptions[toolName] || `执行工具：${toolName}`
     },
@@ -1798,10 +1818,13 @@ export default {
       }
     },
 
-    // 批量执行工具调用（异步，支持文件系统工具）
-    async executeToolCalls(toolCalls) {
+    // 批量执行工具调用（异步，支持文件系统工具，支持进度回调）
+    async executeToolCalls(toolCalls, progressCallback) {
       const results = []
-      for (const tc of toolCalls) {
+      for (let i = 0; i < toolCalls.length; i++) {
+        const tc = toolCalls[i]
+        // 通知回调：开始执行第i个工具
+        if (progressCallback) progressCallback(i, 'executing', tc)
         let result = ''
         try {
           switch (tc.tool) {
@@ -1999,6 +2022,13 @@ export default {
             case 'add_node_icon':
               result = this.executeAddNodeIcon(tc.params.node || '', tc.params.icon || '')
               break
+            // 二开：记忆系统工具
+            case 'query_memory':
+              result = this.executeQueryMemory()
+              break
+            case 'add_memory':
+              result = this.executeAddMemory(tc.params.content || '')
+              break
             default:
               result = { success: false, message: `未知工具：${tc.tool}` }
           }
@@ -2013,6 +2043,8 @@ export default {
           result: isObj ? result.message : result,
           success: isObj ? result.success : true
         })
+        // 通知回调：第i个工具执行完成
+        if (progressCallback) progressCallback(i, 'done', tc, isObj ? result.success : true)
       }
       return results
     },
@@ -2095,19 +2127,39 @@ export default {
       }
 
       this.isToolExecuting = true
-      // 在当前AI消息上显示"正在调用相关工具..."
+      // 在当前AI消息上显示工具执行进度（逐个工具显示状态）
       const lastMsg = this.chatList[this.chatList.length - 1]
+      // 构建工具执行状态HTML
+      const buildToolStatusHtml = (toolCalls, toolStatuses) => {
+        let html = '<div class="toolStatusList">'
+        toolCalls.forEach((tc, i) => {
+          const status = toolStatuses[i] || 'pending'
+          const desc = tc.description || tc.tool
+          if (status === 'executing') {
+            html += `<div class="toolStatusItem executing"><span class="el-icon-loading"></span><span class="toolStatusText">${desc}</span></div>`
+          } else if (status === 'done') {
+            html += `<div class="toolStatusItem done"><span class="el-icon-check"></span><span class="toolStatusText">${desc}</span></div>`
+          } else if (status === 'error') {
+            html += `<div class="toolStatusItem error"><span class="el-icon-close"></span><span class="toolStatusText">${desc}</span></div>`
+          } else {
+            html += `<div class="toolStatusItem pending"><span class="el-icon-more"></span><span class="toolStatusText">${desc}</span></div>`
+          }
+        })
+        html += '</div>'
+        return html
+      }
+      // 初始化工具状态（第一个为executing，其余为pending）
+      const toolStatuses = new Array(toolCalls.length).fill('pending')
+      toolStatuses[0] = 'executing'
       if (lastMsg && lastMsg.type === 'ai') {
         if (!md) md = new MarkdownIt()
         const stripped = this.stripToolCalls(this.stripMemoryTags(aiResponseText))
         lastMsg.content_raw = stripped
-        // 如果AI的初始回复有实际文字内容，保留显示但加上工具调用提示
+        const toolHtml = buildToolStatusHtml(toolCalls, toolStatuses)
         if (stripped.trim()) {
-          lastMsg.content = md.render(stripped) +
-            '<div class="toolExecutingHint"><span class="el-icon-loading"></span> AI正在调用相关工具...</div>'
+          lastMsg.content = md.render(stripped) + toolHtml
         } else {
-          // 如果AI只输出了工具调用没有其他文字，只显示工具调用提示
-          lastMsg.content = '<div class="toolExecutingHint"><span class="el-icon-loading"></span> AI正在调用相关工具...</div>'
+          lastMsg.content = toolHtml
         }
         this.$refs.chatResBoxRef.scrollTop = this.$refs.chatResBoxRef.scrollHeight
       }
@@ -2125,11 +2177,30 @@ export default {
           }
           return
         }
-        // 执行工具调用（异步）
-        const results = await this.executeToolCalls(toolCalls)
+        // 执行工具调用（异步，带进度回调）
+        const progressCallback = (index, status, tc, success) => {
+          if (status === 'executing') {
+            toolStatuses[index] = 'executing'
+          } else if (status === 'done') {
+            toolStatuses[index] = success ? 'done' : 'error'
+          }
+          // 更新UI
+          if (lastMsg && lastMsg.type === 'ai') {
+            if (!md) md = new MarkdownIt()
+            const cleanText = this.stripToolCalls(this.stripMemoryTags(lastMsg.content_raw || ''))
+            const toolHtml = buildToolStatusHtml(toolCalls, toolStatuses)
+            lastMsg.content = cleanText ? md.render(cleanText) + toolHtml : toolHtml
+            this.$nextTick(() => {
+              if (this.$refs.chatResBoxRef) {
+                this.$refs.chatResBoxRef.scrollTop = this.$refs.chatResBoxRef.scrollHeight
+              }
+            })
+          }
+        }
+        const results = await this.executeToolCalls(toolCalls, progressCallback)
         const toolResultsText = this.formatToolResults(results)
 
-        // 清除旧消息的loading提示，保留AI的初始文字
+        // 清除旧消息的工具状态显示，保留AI的初始文字
         if (lastMsg && lastMsg.type === 'ai') {
           const cleanText = this.stripToolCalls(this.stripMemoryTags(lastMsg.content_raw || ''))
           if (!md) md = new MarkdownIt()
@@ -2211,7 +2282,7 @@ export default {
                 currentMsg.content = md.render(cleanRaw)
               } else {
                 // AI返回空内容，移除占位消息或显示提示
-                if (currentMsg.content && currentMsg.content.includes('toolExecutingHint')) {
+                if (currentMsg.content && (currentMsg.content.includes('toolExecutingHint') || currentMsg.content.includes('toolStatusList'))) {
                   this.chatList.pop()
                 }
               }
@@ -2316,6 +2387,66 @@ export default {
         existing = existing.slice(-100)
       }
       localStorage.setItem(key, JSON.stringify(existing))
+    },
+
+    // 二开：执行查询记忆工具
+    executeQueryMemory() {
+      try {
+        const key = this.getMemoryKey()
+        const data = localStorage.getItem(key)
+        if (!data) {
+          return { success: true, message: '当前文档的AI记忆库为空，还没有存储任何记忆内容。' }
+        }
+        const memories = JSON.parse(data)
+        if (!Array.isArray(memories) || memories.length === 0) {
+          return { success: true, message: '当前文档的AI记忆库为空，还没有存储任何记忆内容。' }
+        }
+        // 过滤过期记忆
+        const oneMonthAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
+        const valid = memories.filter(m => m.timestamp >= oneMonthAgo)
+        if (valid.length === 0) {
+          return { success: true, message: '当前文档的AI记忆库中的记忆已全部过期。' }
+        }
+        const lines = valid.map((m, i) => {
+          const date = new Date(m.timestamp).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+          return `${i + 1}. [${date}] ${m.text}`
+        })
+        return { success: true, message: `AI记忆库中共有 ${valid.length} 条记忆：\n${lines.join('\n')}` }
+      } catch (e) {
+        return { success: false, message: `查询记忆失败：${e.message || e}` }
+      }
+    },
+
+    // 二开：执行添加记忆工具
+    executeAddMemory(content) {
+      if (!content || !content.trim()) {
+        return { success: false, message: '添加记忆失败：内容不能为空' }
+      }
+      try {
+        const key = this.getMemoryKey()
+        let existing = []
+        try {
+          const data = localStorage.getItem(key)
+          if (data) existing = JSON.parse(data)
+        } catch (e) {}
+        // 去重检查
+        const existingTexts = new Set(existing.map(m => m.text))
+        if (existingTexts.has(content.trim())) {
+          return { success: true, message: `该内容已在记忆库中，无需重复添加：${content.trim()}` }
+        }
+        existing.push({
+          text: content.trim(),
+          timestamp: Date.now()
+        })
+        // 限制最多100条记忆
+        if (existing.length > 100) {
+          existing = existing.slice(-100)
+        }
+        localStorage.setItem(key, JSON.stringify(existing))
+        return { success: true, message: `已成功添加到AI记忆库：${content.trim()}` }
+      } catch (e) {
+        return { success: false, message: `添加记忆失败：${e.message || e}` }
+      }
     },
 
     // 二开：打开记忆管理器
@@ -3064,7 +3195,7 @@ export default {
       // 清除所有消息上的loading提示
       if (!md) md = new MarkdownIt()
       this.chatList.forEach(msg => {
-        if (msg.type === 'ai' && msg.content && msg.content.includes('toolExecutingHint')) {
+        if (msg.type === 'ai' && msg.content && (msg.content.includes('toolExecutingHint') || msg.content.includes('toolStatusList'))) {
           const cleanText = this.stripToolCalls(this.stripMemoryTags(msg.content_raw || ''))
           msg.content = cleanText ? md.render(cleanText) : ''
         }
@@ -4955,6 +5086,53 @@ export default {
   50% { opacity: 1; }
 }
 
+/* ============ 二开：工具执行状态列表 ============ */
+.toolStatusList {
+  margin-top: 8px;
+  padding: 6px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.toolStatusItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  transition: all 0.3s ease;
+}
+.toolStatusItem.executing {
+  background-color: rgba(64, 158, 255, 0.08);
+  color: #409eff;
+  animation: toolHintPulse 1.5s ease-in-out infinite;
+}
+.toolStatusItem.done {
+  background-color: rgba(103, 194, 58, 0.08);
+  color: #67c23a;
+}
+.toolStatusItem.error {
+  background-color: rgba(245, 108, 108, 0.08);
+  color: #f56c6c;
+}
+.toolStatusItem.pending {
+  background-color: rgba(144, 147, 153, 0.06);
+  color: #909399;
+}
+.toolStatusItem .toolStatusText {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolStatusItem .el-icon-check {
+  font-weight: bold;
+}
+.toolStatusItem .el-icon-loading {
+  animation: rotating 1.5s linear infinite;
+}
+
 /* ============ 二开：智能内容导出按钮 ============ */
 .contentExportBtn {
   display: inline-flex;
@@ -4997,6 +5175,22 @@ export default {
   .toolExecutingHint {
     background-color: rgba(102, 177, 255, 0.1);
     color: #74b9ff;
+  }
+  .toolStatusItem.executing {
+    background-color: rgba(102, 177, 255, 0.1);
+    color: #74b9ff;
+  }
+  .toolStatusItem.done {
+    background-color: rgba(103, 194, 58, 0.12);
+    color: #85ce61;
+  }
+  .toolStatusItem.error {
+    background-color: rgba(245, 108, 108, 0.12);
+    color: #f78989;
+  }
+  .toolStatusItem.pending {
+    background-color: rgba(144, 147, 153, 0.08);
+    color: #a6a9ad;
   }
 }
 

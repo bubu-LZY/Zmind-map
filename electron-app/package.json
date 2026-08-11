@@ -17,7 +17,7 @@
     "appId": "com.local.zmindmap",
     "productName": "Zmind-map",
     "directories": {
-      "output": "release-2.0.0"
+      "output": "release-2.0.1"
     },
     "files": [
       "main.js",
