@@ -1,0 +1,69 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build outputs
+mind-map/dist/
+mind-map/dist*/
+mind-map/web/dist/
+mind-map/build*/
+mind-map/zbuild*/
+mind-map/zmind-build*/
+mind-map/dist-old*/
+mind-map/dist-prev*/
+electron-app/app/
+electron-app/app2/
+electron-app/asarcheck/
+electron-app/backup-dist-prev2/
+electron-app/d*/
+electron-app/dist-*/
+electron-app/release-*/
+electron-app/release*/
+installer-out*/
+*.asar
+
+# Logs
+*.log
+*.txt
+!mind-map/web/src/assets/svg/**/*.txt
+!mind-map/simple-mind-map/src/**/*.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env.local
+.env.*.local
+
+# Archives
+*.zip
+*.rar
+*.7z
+
+# Internal work files
+.workbuddy/
+.trae-html-share-packages/
+mind-map/simple-mind-map/dist/
+mind-map/simple-mind-map/types/
+
+# Staging/comparison dirs
+zmind-map-staging/
+zmind-map-comparison/
+
+# Root-level non-essential files
+index.html
+pack_release.py
+UPDATE_LOG.md
+Zmind-map*
+对话总结*
+zmind-map-comparison/
+electron-app/(null)/
+*.bin
