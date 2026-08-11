@@ -111,6 +111,8 @@ import OuterFrame from 'simple-mind-map/src/plugins/OuterFrame.js'
 import MindMapLayoutPro from 'simple-mind-map/src/plugins/MindMapLayoutPro.js'
 import NodeBase64ImageStorage from 'simple-mind-map/src/plugins/NodeBase64ImageStorage.js'
 import Themes from 'simple-mind-map-plugin-themes'
+import { transformMarkdownTo } from 'simple-mind-map/src/parse/markdownTo'
+import { createUid } from 'simple-mind-map/src/utils'
 // 协同编辑插件
 // import Cooperate from 'simple-mind-map/src/plugins/Cooperate.js'
 import OutlineSidebar from './OutlineSidebar.vue'
@@ -244,7 +246,10 @@ export default {
       // 跳转导航历史栈：记录跳转前的文件路径，用于"返回原文档"
       navStack: [],
       // 是否正在返回（返回时不压栈）
-      isReturning: false
+      isReturning: false,
+      // 二开：AI对话思维导图生成 - 节点选择模式
+      aiMindMapPickMode: '', // '' | 'insert' | 'replace'
+      aiMindMapPendingData: null // AI 生成的思维导图树数据
     }
   },
   computed: {
@@ -319,6 +324,10 @@ export default {
     this.$bus.$on('review_plan_updated', this.syncToLanDebounced)
     // 二开：复习模式点击节点跳转（统一由 Edit.vue 处理文件加载+高亮+导航栈）
     this.$bus.$on('zmind_review_navigate', this.handleReviewNavigate)
+    // 二开：一键刷新视图
+    this.$bus.$on('zmind_refresh_view', this.refreshView)
+    // 二开：AI对话思维导图生成 - 插入/替换节点选择模式
+    this.$bus.$on('zmind_ai_mindmap_pick', this.onAiMindMapPick)
     // 二开：@ 文件引用功能
     this.mindMap && this.mindMap.on('show_file_mention', this.handleShowFileMention)
     this.mindMap && this.mindMap.on('file_link_click', this.handleFileLinkClick)
@@ -368,6 +377,8 @@ export default {
     this.$bus.$off('add_to_review_plan', this.handleAddToReviewPlan)
     // 二开：取消复习导航监听
     this.$bus.$off('zmind_review_navigate', this.handleReviewNavigate)
+    this.$bus.$off('zmind_refresh_view', this.refreshView)
+    this.$bus.$off('zmind_ai_mindmap_pick', this.onAiMindMapPick)
     this.$bus.$off('review_plan_updated', this.syncToLanDebounced)
     window.removeEventListener('resize', this.handleResize)
     window.removeEventListener('keydown', this.onZenEscKeydown)
@@ -627,22 +638,22 @@ export default {
       const originalPath = item.filePath || ''
       const nodeUid = item.nodeUid || ''
       const currentPath = this.$store.state.currentFilePath || ''
-      // 判断目标文件是否为当前文件
-      const targetPath = backupPath || originalPath
+      // 判断目标文件是否为当前文件（优先比较原文件路径，保证看到最新内容）
+      const targetPath = originalPath || backupPath
       if (!targetPath || targetPath === currentPath) {
         // 同文件，直接高亮
         this.highlightReferencedNode(nodeUid)
         return
       }
-      // 跨文件，先尝试备份文件
-      if (backupPath) {
-        const ok = await this.loadAndHighlightFile(backupPath, nodeUid)
-        if (ok) return
-        // 备份文件不存在或加载失败，回退到原文件
-        this.$message.info('备份文件不可用，尝试打开原文件')
-      }
+      // 跨文件，优先加载原文件（最新内容），失败再回退到备份文件
       if (originalPath) {
         const ok = await this.loadAndHighlightFile(originalPath, nodeUid)
+        if (ok) return
+        // 原文件不存在或加载失败，回退到备份文件
+        this.$message.info('原文件不可用，尝试打开备份文件')
+      }
+      if (backupPath) {
+        const ok = await this.loadAndHighlightFile(backupPath, nodeUid)
         if (!ok) {
           this.$message.error('无法加载复习文件，文件可能已被移动或删除')
         }
@@ -715,7 +726,8 @@ export default {
       }
     },
 
-    // 高亮节点：通过 DOM 坐标在节点位置显示蓝色边框闪烁
+    // 高亮节点：通过 DOM 坐标在节点位置显示红色边框闪烁
+    // 二开：非终末级节点（有子节点）时，红框框住该节点及其所有子节点的整体范围
     // node.group 是 SVG.js 对象，真实 DOM 元素是 node.group.node
     doHighlightNode(node, nodeUid) {
       if (!this.mindMap || !this.mindMap.renderer) return
@@ -752,20 +764,40 @@ export default {
         return
       }
 
-      // 获取节点的屏幕坐标
-      // SVG.js v3: group.node 是 DOM <g> 元素
-      let rect = null
-      try {
-        if (activeNode.group) {
-          // 尝试 group.node（SVG.js v3 标准）
-          const domEl = activeNode.group.node || activeNode.group
+      // 收集目标节点及其所有子节点的 DOM 元素
+      const collectNodeEls = (n, els) => {
+        if (n.group) {
+          const domEl = n.group.node || n.group
           if (domEl && typeof domEl.getBoundingClientRect === 'function') {
-            rect = domEl.getBoundingClientRect()
-            console.log('[复习高亮] group.node rect:', rect.left, rect.top, rect.width, rect.height)
+            els.push(domEl)
           }
         }
-      } catch (e) {
-        console.log('[复习高亮] group.node 获取坐标失败:', e)
+        if (n.children && n.children.length > 0) {
+          n.children.forEach(child => collectNodeEls(child, els))
+        }
+      }
+      const nodeEls = []
+      collectNodeEls(activeNode, nodeEls)
+
+      // 计算所有节点的整体边界框
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      let hasValidRect = false
+      nodeEls.forEach(el => {
+        try {
+          const r = el.getBoundingClientRect()
+          if (r.width > 0 && r.height > 0) {
+            minX = Math.min(minX, r.left)
+            minY = Math.min(minY, r.top)
+            maxX = Math.max(maxX, r.right)
+            maxY = Math.max(maxY, r.bottom)
+            hasValidRect = true
+          }
+        } catch (e) {}
+      })
+
+      let rect = null
+      if (hasValidRect) {
+        rect = { left: minX, top: minY, width: maxX - minX, height: maxY - minY }
       }
 
       // 如果获取不到坐标或坐标为0，尝试用 mindMap 容器中心位置
@@ -780,14 +812,12 @@ export default {
               top: containerRect.top + containerRect.height / 2 - 30,
               width: 200, height: 60
             }
-            console.log('[复习高亮] 容器中心 rect:', rect.left, rect.top, rect.width, rect.height)
           }
         } catch (e) {}
       }
 
       // 最终兜底：屏幕中心
       if (!rect) {
-        console.log('[复习高亮] 所有坐标获取失败，使用屏幕中心')
         rect = {
           left: window.innerWidth / 2 - 100,
           top: window.innerHeight / 2 - 30,
@@ -795,22 +825,21 @@ export default {
         }
       }
 
-      console.log('[复习高亮] 创建蓝框:', rect.left, rect.top, rect.width, rect.height)
-      // 创建蓝色边框闪烁层（覆盖在节点位置）
+      console.log('[复习高亮] 创建红框（含子节点）:', rect.left, rect.top, rect.width, rect.height, '节点数:', nodeEls.length)
+      // 创建红色边框闪烁层（覆盖在节点及其子节点的整体范围上）
       const box = document.createElement('div')
-      box.style.cssText = 'position:fixed;left:' + (rect.left - 6) + 'px;top:' + (rect.top - 6) + 'px;width:' + (rect.width + 12) + 'px;height:' + (rect.height + 12) + 'px;border:3px solid #0984e3;border-radius:8px;pointer-events:none;z-index:99999;box-shadow:0 0 15px rgba(9,132,227,0.5);opacity:1;'
+      box.style.cssText = 'position:fixed;left:' + (rect.left - 6) + 'px;top:' + (rect.top - 6) + 'px;width:' + (rect.width + 12) + 'px;height:' + (rect.height + 12) + 'px;border:3px solid #e74c3c;border-radius:8px;pointer-events:none;z-index:99999;box-shadow:0 0 15px rgba(231,76,60,0.5);opacity:1;'
       document.body.appendChild(box)
       this._refHighlightBox = box
 
-      // 蓝色边框闪烁：透明度在 1 和 0.2 之间切换（二开：闪 2 次，总时长约 1 秒）
+      // 红色边框闪烁：透明度在 1 和 0.2 之间切换（闪 4 次，总时长约 2 秒）
       let count = 0
       this._refBlinkTimer = setInterval(() => {
         count++
         box.style.opacity = count % 2 === 0 ? '1' : '0.2'
-        if (count >= 4) {
+        if (count >= 8) {
           clearInterval(this._refBlinkTimer)
           this._refBlinkTimer = null
-          // 闪烁结束后 200ms 移除（总时长约 1 秒）
           this._refHighlightTimer = setTimeout(() => {
             if (this._refHighlightBox && this._refHighlightBox.parentNode) {
               this._refHighlightBox.parentNode.removeChild(this._refHighlightBox)
@@ -822,6 +851,7 @@ export default {
     },
 
     // 处理添加到复习计划
+    // 二开：非终末级节点只添加本身，不递归添加子节点
     async handleAddToReviewPlan(nodes) {
       if (!nodes || nodes.length === 0) return
       const filePath = this.$store.state.currentFilePath || ''
@@ -829,29 +859,15 @@ export default {
       let added = 0
       let skipped = 0
 
-      // 递归收集节点及其所有子孙节点
-      const collectWithDescendants = node => {
-        const result = [node]
-        if (node.children && node.children.length > 0) {
-          node.children.forEach(child => {
-            result.push(...collectWithDescendants(child))
-          })
-        }
-        return result
-      }
-
-      // 收集所有需要添加的节点（去重）
+      // 只收集用户选中的节点本身，不再递归子节点
       const allNodes = []
       const seenUids = new Set()
       nodes.forEach(node => {
-        const descendants = collectWithDescendants(node)
-        descendants.forEach(n => {
-          const uid = n.uid || n.getData('uid') || ''
-          if (uid && !seenUids.has(uid)) {
-            seenUids.add(uid)
-            allNodes.push(n)
-          }
-        })
+        const uid = node.uid || node.getData('uid') || ''
+        if (uid && !seenUids.has(uid)) {
+          seenUids.add(uid)
+          allNodes.push(node)
+        }
       })
 
       // 先过滤出真正需要添加的节点
@@ -1107,6 +1123,8 @@ export default {
       this.mindMap.on('node_tree_render_end', applyClozeStyles)
       // 点击包含挖空内容的节点时切换显示/隐藏
       this.mindMap.on('node_click', node => {
+        // AI 思维导图插入/替换选择模式下不触发挖空切换
+        if (this._aiMindMapPicking) return
         if (nodeHasCloze(node)) {
           toggleNodeCloze(node)
         }
@@ -1156,6 +1174,8 @@ export default {
               this.$notify({ title: '挖空', message: '已将整节点内容标记为挖空', type: 'success', duration: 2000 })
             } else if (result === 'removed') {
               this.$notify({ title: '挖空', message: '已取消该节点的全部挖空', type: 'success', duration: 2000 })
+            } else if (result === 'mixed') {
+              this.$notify({ title: '挖空', message: '已处理选中的多个节点（部分挖空、部分取消）', type: 'success', duration: 2000 })
             } else {
               // 无活跃节点或根节点 → 不做任何事（也不居中根节点）
             }
@@ -1337,6 +1357,17 @@ export default {
         }
       })
       this.loadPlugins()
+      // 二开：AI对话思维导图生成 - 节点选择模式（需早于挖空监听注册，先执行）
+      this.mindMap.on('node_click', node => {
+        if (this.aiMindMapPickMode) {
+          this._aiMindMapPicking = true
+          const mode = this.aiMindMapPickMode
+          this.aiMindMapPickMode = ''
+          this.removePickNodeCursor()
+          this.applyAiMindMapToNode(node, mode)
+          setTimeout(() => { this._aiMindMapPicking = false }, 300)
+        }
+      })
       this.mindMap.keyCommand.addShortcut('Control+s', () => {
         const ok = this.manualSave()
         if (ok) {
@@ -1393,6 +1424,41 @@ export default {
         })
       })
       this.bindSaveEvent()
+      // 二开：Ctrl+C 复制纯文本
+      // renderer.copy() 会先执行（设置内部剪贴板 + 系统剪贴板 HTML），此处覆盖系统剪贴板为纯文本
+      // 内部剪贴板（beingCopyData）不受影响，Ctrl+V 粘贴节点仍正常
+      this.mindMap.keyCommand.addShortcut('Control+c', () => {
+        const activeNodes = this.mindMap.renderer.activeNodeList || []
+        if (activeNodes.length === 0) return
+        const text = activeNodes
+          .map(n => {
+            const raw = n.getData('text') || ''
+            const div = document.createElement('div')
+            div.innerHTML = raw
+            return (div.textContent || div.innerText || '')
+              .replace(/&nbsp;/g, ' ')
+              .trim()
+          })
+          .filter(t => t)
+          .join('\n')
+        if (!text) return
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text)
+          } else {
+            const ta = document.createElement('textarea')
+            ta.value = text
+            ta.style.position = 'fixed'
+            ta.style.opacity = '0'
+            document.body.appendChild(ta)
+            ta.select()
+            document.execCommand('copy')
+            document.body.removeChild(ta)
+          }
+        } catch (e) {
+          console.error('[Ctrl+C纯文本] 失败:', e)
+        }
+      })
       // 拦截节点删除：检查是否在复习计划中
       this.interceptNodeDeletion()
       // 初始化复习触发监听 + 同步配置到主进程
@@ -1510,6 +1576,153 @@ export default {
       this.mindMap.reRender()
     },
 
+    // 二开：一键刷新视图（修复显示异常）
+    refreshView() {
+      if (!this.mindMap) return
+      try {
+        this.mindMap.reRender()
+        setTimeout(() => applyClozeStyles(), 100)
+      } catch (e) {
+        console.error('[刷新] 失败:', e)
+      }
+    },
+
+    // 二开：AI对话思维导图生成 - 进入节点选择模式
+    onAiMindMapPick({ mode, markdown }) {
+      if (!this.mindMap) return
+      // 去除推理模型 <think> 标签
+      const cleanContent = (markdown || '')
+        .replace(/<think>[\s\S]*?<\/think>/gi, '')
+        .replace(/<think>[\s\S]*/gi, '')
+        .trim()
+      let treeData = null
+      try {
+        treeData = transformMarkdownTo(cleanContent)
+      } catch (e) {
+        console.error('[AI思维导图] markdown 解析失败:', e)
+      }
+      if (!treeData) {
+        this.$message.warning('AI 返回的内容无法解析为思维导图')
+        return
+      }
+      this.addUidToTree(treeData)
+      this.aiMindMapPendingData = treeData
+      this.aiMindMapPickMode = mode
+      document.body.classList.add('zmind-pick-node-cursor')
+      this.showPickNodeTip(mode)
+    },
+
+    // 给树数据添加 uid
+    addUidToTree(data) {
+      const walk = node => {
+        if (!node || !node.data) return
+        if (!node.data.uid) {
+          node.data.uid = createUid()
+        }
+        if (node.children && node.children.length > 0) {
+          node.children.forEach(walk)
+        }
+      }
+      walk(data)
+    },
+
+    // 显示选择节点顶部提示
+    showPickNodeTip(mode) {
+      this.removePickNodeTip()
+      const tip = document.createElement('div')
+      tip.className = 'zmind-pick-node-tip'
+      tip.id = 'zmindPickNodeTip'
+      const modeText = mode === 'insert' ? '插入为子节点' : '替换节点内容'
+      tip.innerHTML =
+        '请点击要<strong>' +
+        modeText +
+        '</strong>的目标节点 &nbsp;&nbsp;<span style="opacity:0.7">按 Esc 取消</span>'
+      document.body.appendChild(tip)
+      this._pickNodeEscHandler = e => {
+        if (e.keyCode === 27) this.cancelAiMindMapPick()
+      }
+      document.addEventListener('keydown', this._pickNodeEscHandler)
+    },
+
+    removePickNodeTip() {
+      const tip = document.getElementById('zmindPickNodeTip')
+      if (tip) tip.remove()
+      if (this._pickNodeEscHandler) {
+        document.removeEventListener('keydown', this._pickNodeEscHandler)
+        this._pickNodeEscHandler = null
+      }
+    },
+
+    removePickNodeCursor() {
+      document.body.classList.remove('zmind-pick-node-cursor')
+      this.removePickNodeTip()
+    },
+
+    cancelAiMindMapPick() {
+      this.aiMindMapPickMode = ''
+      this.aiMindMapPendingData = null
+      this.removePickNodeCursor()
+    },
+
+    // 执行插入为子节点 / 替换节点
+    applyAiMindMapToNode(node, mode) {
+      if (!this.aiMindMapPendingData || !node) {
+        this.cancelAiMindMapPick()
+        return
+      }
+      const targetUid = node.getData('uid')
+      if (!targetUid) {
+        this.$message.warning('目标节点无效')
+        this.cancelAiMindMapPick()
+        return
+      }
+      // 保存历史（支持 Ctrl+Z 撤销）
+      this.mindMap.command.originAddHistory()
+      const fullData = this.mindMap.getData(true)
+      const newTree = JSON.parse(JSON.stringify(this.aiMindMapPendingData))
+      const aiChildren = newTree.children || []
+
+      const walk = n => {
+        if (!n || !n.data) return false
+        if (n.data.uid === targetUid) {
+          if (mode === 'insert') {
+            // 插入为子节点：保留原子节点，追加 AI 树的 children
+            if (!n.children) n.children = []
+            n.children.push(...aiChildren)
+          } else {
+            // 替换节点：替换 data（保留原 uid）和 children
+            n.data = { ...newTree.data, uid: n.data.uid }
+            n.children = aiChildren
+          }
+          return true
+        }
+        if (n.children && n.children.length > 0) {
+          for (const child of n.children) {
+            if (walk(child)) return true
+          }
+        }
+        return false
+      }
+
+      const root = fullData.root || fullData
+      const found = walk(root)
+      if (!found) {
+        this.$message.warning('未找到目标节点，可能数据已变更')
+        this.cancelAiMindMapPick()
+        return
+      }
+
+      this.aiMindMapPendingData = null
+      if (fullData.root) {
+        this.mindMap.setFullData(fullData)
+      } else {
+        this.mindMap.setData(fullData)
+      }
+      this.mindMap.render()
+      this.manualSave && this.manualSave()
+      this.$message.success(mode === 'insert' ? '已插入为子节点' : '已替换节点内容')
+    },
+
     // 执行命令
     execCommand(...args) {
       this.mindMap.execCommand(...args)
@@ -1519,12 +1732,99 @@ export default {
     async export(...args) {
       try {
         showLoading()
+        const type = args[0]
+        // 二开：导出 PDF/PNG/SVG 时把备注以灰色小字显示在节点下方
+        const isVisualExport = ['pdf', 'png', 'svg'].includes(type)
+        let noteBackup = null
+        if (isVisualExport) {
+          noteBackup = this._appendNoteToNodesForExport()
+          if (noteBackup.changed) {
+            this.mindMap.reRender()
+            // 等待渲染完成
+            await new Promise(resolve => {
+              let done = false
+              const onEnd = () => {
+                if (done) return
+                done = true
+                this.mindMap.off('node_tree_render_end', onEnd)
+                resolve()
+              }
+              this.mindMap.on('node_tree_render_end', onEnd)
+              setTimeout(resolve, 1000) // 兜底
+            })
+          }
+        }
         await this.mindMap.export(...args)
+        // 导出后恢复原节点文本
+        if (noteBackup && noteBackup.changed) {
+          this._restoreNodesTextAfterExport(noteBackup)
+          this.mindMap.reRender()
+        }
         hideLoading()
       } catch (error) {
         console.log(error)
         hideLoading()
       }
+    },
+
+    // 二开：导出前把备注追加到节点文本末尾（灰色小字）
+    _appendNoteToNodesForExport() {
+      const root = this.mindMap.renderer.root
+      if (!root) return { changed: false, backup: {} }
+      const backup = {}
+      let changed = false
+      const escapeHtml = s =>
+        String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+      const walk = node => {
+        if (!node) return
+        const note = node.getData('note')
+        if (note && String(note).trim()) {
+          const originalText = node.getData('text') || ''
+          backup[node.uid] = originalText
+          // 备注转纯文本
+          const noteText = String(note)
+            .replace(/<[^>]+>/g, '')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/\n+/g, ' ')
+            .trim()
+          if (noteText) {
+            const isRich = !!node.getData('richText')
+            if (isRich) {
+              // 富文本：追加灰色小字段落
+              const noteHtml =
+                '<p><span style="color:#aaa;font-size:10px;">' +
+                escapeHtml(noteText) +
+                '</span></p>'
+              node.setText(originalText + noteHtml, true)
+            } else {
+              node.setText(originalText + '\n' + noteText, false)
+            }
+            changed = true
+          }
+        }
+        ;(node.children || []).forEach(walk)
+      }
+      walk(root)
+      return { changed, backup }
+    },
+
+    // 二开：导出后恢复节点原文本
+    _restoreNodesTextAfterExport(noteBackup) {
+      const backup = noteBackup.backup || {}
+      const root = this.mindMap.renderer.root
+      if (!root) return
+      const walk = node => {
+        if (!node) return
+        if (backup[node.uid] !== undefined) {
+          const isRich = !!node.getData('richText')
+          node.setText(backup[node.uid], isRich)
+        }
+        ;(node.children || []).forEach(walk)
+      }
+      walk(root)
     },
 
     // 修改导出内边距
@@ -1836,6 +2136,30 @@ export default {
 </style>
 
 <style>
+/* 二开：AI思维导图节点选择模式 - 蓝色鼠标样式 */
+body.zmind-pick-node-cursor,
+body.zmind-pick-node-cursor * {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="9" fill="none" stroke="%230984e3" stroke-width="2.5"/><circle cx="14" cy="14" r="2.5" fill="%230984e3"/></svg>') 14 14, crosshair !important;
+}
+/* 节点选择顶部提示 */
+.zmind-pick-node-tip {
+  position: fixed;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #0984e3;
+  color: #fff;
+  padding: 8px 20px;
+  border-radius: 22px;
+  font-size: 13px;
+  z-index: 99999;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  white-space: nowrap;
+}
+.zmind-pick-node-tip strong {
+  color: #ffeaa7;
+}
+
 /* 挖空功能全局样式（二开） */
 /* 防止 foreignObject 裁剪挖空下划线 */
 foreignObject {

@@ -8,6 +8,9 @@ import {
 } from './reviewPlan'
 import { getTextFromHtml } from 'simple-mind-map/src/utils'
 
+// 缓存当前 mindMap 实例
+let _mindMap = null
+
 // 同步复习配置到主进程
 export function syncReviewConfigToMain(config) {
   if (window.zmindReview && window.zmindReview.syncReviewConfig) {
@@ -22,6 +25,7 @@ export function syncReviewConfigToMain(config) {
 
 // 初始化复习触发监听
 export function initReviewTriggerHandler(mindMap, store) {
+  _mindMap = mindMap
   if (!window.zmindReview || !window.zmindReview.onReviewTrigger) return
 
   window.zmindReview.onReviewTrigger(async (data) => {
@@ -162,11 +166,95 @@ function dedupeByNode(items) {
   return Array.from(map.values())
 }
 
-// 发送飞书交互式卡片消息
+// 递归查找节点（按 uid）
+function findNodeByUid(node, uid) {
+  if (!node) return null
+  if (node.uid === uid) return node
+  try {
+    if (node.getData && node.getData('uid') === uid) return node
+  } catch (e) {}
+  if (node.children) {
+    for (const child of node.children) {
+      const found = findNodeByUid(child, uid)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+// 转义 markdown 表格单元格内的特殊字符（| 和换行）
+function escapeTableCell(text) {
+  if (!text) return ''
+  return String(text)
+    .replace(/\r\n/g, ' ')
+    .replace(/\n/g, ' ')
+    .replace(/\|/g, '\\|')
+}
+
+// 发送飞书交互式卡片消息（markdown 表格形式）
+// 表格列：序号 | 被复习节点的上级标题 | 被复习节点同级所有内容 | 艾宾浩斯复习节点
+// 上级标题相同的行合并显示（同组只在首行显示上级标题，其余留空）
 async function sendFeishuCard(webhookUrl, { title, template, items }) {
   if (!window.zmindReview || !window.zmindReview.sendFeishuWebhook) return
 
+  // 收集每个 item 的同级节点信息（实时从当前 mindMap 获取）
+  const rows = []
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    const nodeText = getTextFromHtml(item.nodeText || '')
+    let parentText = getTextFromHtml(item.parentText || '')
+    let siblings = []
+    // 尝试从当前 mindMap 获取同级节点（父节点的所有子节点）
+    if (_mindMap && _mindMap.renderer && _mindMap.renderer.root && item.nodeUid) {
+      try {
+        const targetNode = findNodeByUid(_mindMap.renderer.root, item.nodeUid)
+        if (targetNode && targetNode.parent) {
+          const parentNode = targetNode.parent
+          const pText = getTextFromHtml(parentNode.getData('text') || '')
+          if (pText) parentText = pText
+          siblings = (parentNode.children || [])
+            .map(c => getTextFromHtml(c.getData('text') || ''))
+            .filter(t => t)
+        }
+      } catch (e) {
+        console.error('[飞书推送] 获取同级节点失败:', e)
+      }
+    }
+    // 兜底：未获取到同级时至少包含自身
+    if (siblings.length === 0 && nodeText) {
+      siblings = [nodeText]
+    }
+    rows.push({
+      parentText,
+      siblings,
+      nodeText
+    })
+  }
+
+  // 构造 markdown 表格
+  let table = '| 序号 | 被复习节点的上级标题 | 被复习节点同级所有内容 | 艾宾浩斯复习节点 |\n'
+  table += '| --- | --- | --- | --- |\n'
+  let lastGroupKey = ''
+  rows.forEach((row, idx) => {
+    // 按 parentText 分组，同组上级标题合并（首行显示，其余留空）
+    const groupKey = row.parentText
+    const parentCell = groupKey === lastGroupKey ? '' : escapeTableCell(row.parentText)
+    lastGroupKey = groupKey
+    // 同级所有内容：用 <br> 连接，复习节点本身加粗标记
+    const siblingsCell = row.siblings
+      .map(s => escapeTableCell(s === row.nodeText ? `**${s}**` : s))
+      .join('<br>')
+    table += `| ${idx + 1} | ${parentCell} | ${siblingsCell} | ${escapeTableCell(row.nodeText)} |\n`
+  })
+
   const elements = [
+    {
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: table
+      }
+    },
     {
       tag: 'note',
       elements: [
@@ -174,25 +262,6 @@ async function sendFeishuCard(webhookUrl, { title, template, items }) {
       ]
     }
   ]
-
-  items.forEach((item, i) => {
-    const text = getTextFromHtml(item.nodeText || '')
-    const parent = getTextFromHtml(item.parentText || '')
-    const file = item.fileName || ''
-    let content = `${i + 1}. **${text}**`
-    if (parent) content += `\n← ${parent}`
-    if (file) content += `\n📄 ${file}`
-    elements.push({
-      tag: 'div',
-      text: {
-        tag: 'lark_md',
-        content
-      }
-    })
-    if (i < items.length - 1) {
-      elements.push({ tag: 'hr' })
-    }
-  })
 
   const payload = {
     msg_type: 'interactive',

@@ -691,14 +691,22 @@ export default {
       messageList = [],
       progress = () => {},
       end = () => {},
-      err = () => {}
+      err = () => {},
+      options = {}
     ) {
       try {
         await this.aiTest()
         // 发起请求
         this.isAiCreating = true
         this.aiInstance = new Ai()
-        this.aiInstance.init(this.aiConfig)
+        // 二开：合并深度思考开关（对话窗口的开关可临时覆盖全局配置）
+        this.aiInstance.init({
+          ...this.aiConfig,
+          enableThinking:
+            options.enableThinking !== undefined
+              ? options.enableThinking
+              : this.aiConfig.enableThinking
+        })
         // 检测消息中是否包含图片
         let hasImages = false
         const messages = messageList.map(msg => {

@@ -44,7 +44,9 @@ const store = new Vuex.Store({
       key: '',
       model: '',
       // 二开：检测到的可用模型列表，用于在 AI 对话窗口快速切换模型
-      modelList: []
+      modelList: [],
+      // 二开：深度思考模式开关（根据模型名自动识别对应的参数格式）
+      enableThinking: false
     },
     // 当前正在编辑的本地文件路径（文件目录树功能）
     currentFilePath: '',

@@ -201,6 +201,7 @@
 import { mapState, mapMutations } from 'vuex'
 import { getData } from '@/api'
 import { getFs, isWebMode } from '@/utils/webFs'
+import { getReviewPlanByFile, removeFromReviewPlanByFile } from '@/utils/reviewPlan'
 
 const fs = getFs()
 
@@ -780,17 +781,42 @@ export default {
     },
 
     async removeNode(data) {
+      // 二开：检查该文件是否有节点在复习计划中
+      const reviewItems = getReviewPlanByFile(data.path)
+      let confirmMsg = `确定删除"${data.name}"吗？（移入回收站）`
+      let confirmTitle = '删除确认'
+      if (reviewItems.length > 0) {
+        const stripHtml = s =>
+          String(s || '')
+            .replace(/<[^>]+>/g, '')
+            .replace(/&nbsp;/g, ' ')
+            .trim() || '无标题'
+        const itemList = reviewItems
+          .map((item, i) => `${i + 1}. ${stripHtml(item.nodeText)}`)
+          .join('<br>')
+        confirmMsg =
+          `当前文件存在 <b>${reviewItems.length}</b> 个复习计划节点，删除文件将<b>同步删除</b>这些复习计划：<br><br>${itemList}<br><br>是否确认删除"${data.name}"？`
+        confirmTitle = '复习计划存在'
+      }
       try {
-        await this.$confirm(
-          `确定删除"${data.name}"吗？（移入回收站）`,
-          '删除确认',
-          { type: 'warning' }
-        )
+        await this.$confirm(confirmMsg, confirmTitle, {
+          type: 'warning',
+          confirmButtonText: '确认删除',
+          cancelButtonText: '取消',
+          dangerouslyUseHTMLString: true
+        })
       } catch (e) {
         return
       }
       try {
         await fs.remove(data.path)
+        // 同步删除该文件的所有复习计划
+        if (reviewItems.length > 0) {
+          const removed = removeFromReviewPlanByFile(data.path)
+          this.$message.success(`已删除文件，并清理 ${removed} 个复习计划`)
+        } else {
+          this.$message.success('已删除')
+        }
         if (this.currentFilePath === data.path) {
           this.setCurrentFilePath('')
         }
@@ -806,7 +832,6 @@ export default {
         } else {
           this.refreshTree()
         }
-        this.$message.success('已删除')
       } catch (e) {
         console.log(e)
         this.$message.error('删除失败')

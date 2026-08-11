@@ -230,39 +230,54 @@ export const clozeWholeNode = () => {
   if (!mindMapRef || !mindMapRef.renderer) return null
   const activeNodes = mindMapRef.renderer.activeNodeList
   if (!activeNodes || activeNodes.length === 0) return null
-  const node = activeNodes[0]
-  if (!node) return null
-  // 根节点不挖空
-  if (mindMapRef.renderer.root === node) return null
-  let text = node.getData('text') || ''
-  // 检查是否已有挖空
-  const hasCloze = /<span[^>]*class=["'][^"']*smm-cloze[^"']*["'][^>]*>/.test(text)
-  if (hasCloze) {
-    // 取消全部挖空：移除所有 smm-cloze span 包裹，保留内部文字
-    text = text.replace(
-      /<span[^>]*class=["'][^"']*smm-cloze[^"']*["'][^>]*>([\s\S]*?)<\/span>/g,
-      '$1'
-    )
-    node.setText(text)
-    mindMapRef.render()
-    applyClozeStyles()
-    return 'removed'
-  }
-  // 全部挖空：把文字内容包裹在 smm-cloze span 中
-  const isRichText = !!node.getData('richText')
-  if (isRichText && typeof text === 'string') {
-    // 富文本：提取 <p>...</p> 内的文字内容并包裹
-    text = text.replace(
-      /(<p[^>]*>)([\s\S]*?)(<\/p>)/gi,
-      (m, open, inner, close) => open + '<span class="smm-cloze">' + inner + '</span>' + close
-    )
-  } else {
-    // 纯文本 → 升级为富文本
-    const escaped = String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    text = '<p><span class="smm-cloze">' + escaped + '</span></p>'
-  }
-  node.setText(text, true)
+  let addedCount = 0
+  let removedCount = 0
+  // 二开：遍历所有选中节点（修复框选多节点只挖空第一个的问题）
+  activeNodes.forEach(node => {
+    if (!node) return
+    // 根节点不挖空
+    if (mindMapRef.renderer.root === node) return
+    let text = node.getData('text') || ''
+    // 检查是否已有挖空
+    const hasCloze = /<span[^>]*class=["'][^"']*smm-cloze[^"']*["'][^>]*>/.test(text)
+    if (hasCloze) {
+      // 取消全部挖空：移除所有 smm-cloze span 包裹，保留内部文字
+      text = text.replace(
+        /<span[^>]*class=["'][^"']*smm-cloze[^"']*["'][^>]*>([\s\S]*?)<\/span>/g,
+        '$1'
+      )
+      node.setText(text)
+      nodeOverrideMap.delete(node.uid)
+      removedCount++
+    } else {
+      // 全部挖空：把文字内容包裹在 smm-cloze span 中
+      const isRichText = !!node.getData('richText')
+      if (isRichText && typeof text === 'string') {
+        // 富文本：提取 <p>...</p> 内的文字内容并包裹
+        text = text.replace(
+          /(<p[^>]*>)([\s\S]*?)(<\/p>)/gi,
+          (m, open, inner, close) =>
+            open + '<span class="smm-cloze">' + inner + '</span>' + close
+        )
+      } else {
+        // 纯文本 → 升级为富文本
+        const escaped = String(text)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+        text = '<p><span class="smm-cloze">' + escaped + '</span></p>'
+      }
+      node.setText(text, true)
+      // 设置该节点挖空为显示状态（不隐藏），方便用户查看挖空内容
+      nodeOverrideMap.set(node.uid, false)
+      addedCount++
+    }
+  })
+  if (addedCount === 0 && removedCount === 0) return null
   mindMapRef.render()
   applyClozeStyles()
-  return 'added'
+  saveClozeState()
+  if (addedCount > 0 && removedCount === 0) return 'added'
+  if (removedCount > 0 && addedCount === 0) return 'removed'
+  return 'mixed'
 }

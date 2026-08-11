@@ -120,7 +120,15 @@
       <div class="reviewOverviewDialog" :class="{ isDark: isDark }">
         <div class="overviewHeader">
           <span class="overviewTitle">复习知识点总览</span>
-          <span class="overviewClose el-icon-close" @click="closeOverview" title="关闭"></span>
+          <div class="overviewHeaderActions">
+            <el-button
+              size="mini"
+              type="warning"
+              plain
+              @click="clearAllCompletedOverview"
+            >清除所有已完成</el-button>
+            <span class="overviewClose el-icon-close" @click="closeOverview" title="关闭"></span>
+          </div>
         </div>
         <div class="overviewBody customScrollbar">
           <table class="overviewTable" v-if="overviewItems.length > 0">
@@ -133,6 +141,7 @@
                   :key="c.cycle"
                   class="colCycleHeader"
                 >{{ c.label }}</th>
+                <th class="colAction">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -157,6 +166,15 @@
                     ></el-checkbox>
                   </div>
                 </td>
+                <td class="colAction">
+                  <el-button
+                    size="mini"
+                    type="danger"
+                    icon="el-icon-delete"
+                    @click="deleteOverviewItem(item, idx)"
+                    title="删除此复习计划"
+                  ></el-button>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -176,6 +194,7 @@ import {
   markCycleCompleted,
   markCycleUncompleted,
   removeById,
+  removeAllCompleted,
   getReviewStats,
   getToday,
   formatDate,
@@ -422,6 +441,58 @@ export default {
       this.overviewItems = getReviewPlan()
       this.refreshData()
       this.$bus.$emit('review_plan_updated')
+    },
+
+    // 二开：总览表格删除单个复习计划
+    deleteOverviewItem(item, idx) {
+      const text = this.stripHtmlSimple(item.nodeText) || '该节点'
+      this.$confirm(
+        `确定删除「${text}」的复习计划吗？删除后该节点后续所有日期的复习任务都会被一并移除，此操作不可撤销。`,
+        '删除复习计划',
+        {
+          confirmButtonText: '删除',
+          cancelButtonText: '取消',
+          type: 'warning',
+          confirmButtonClass: 'el-button--danger'
+        }
+      )
+        .then(() => {
+          removeById(item.id)
+          this.overviewItems = getReviewPlan()
+          this.refreshData()
+          this.$bus.$emit('review_plan_updated')
+          this.$message.success('已删除该复习计划')
+        })
+        .catch(() => {})
+    },
+
+    // 二开：清除所有已完成的复习计划
+    clearAllCompletedOverview() {
+      const completedCount = this.overviewItems.filter(
+        item => item.cycles.every(c => c.completed)
+      ).length
+      if (completedCount === 0) {
+        this.$message.info('当前没有已完成的复习计划')
+        return
+      }
+      this.$confirm(
+        `确定清除所有已完成的复习计划吗？共 ${completedCount} 项，此操作不可撤销。`,
+        '清除已完成',
+        {
+          confirmButtonText: '清除',
+          cancelButtonText: '取消',
+          type: 'warning',
+          confirmButtonClass: 'el-button--danger'
+        }
+      )
+        .then(() => {
+          const removed = removeAllCompleted()
+          this.overviewItems = getReviewPlan()
+          this.refreshData()
+          this.$bus.$emit('review_plan_updated')
+          this.$message.success(`已清除 ${removed} 项已完成的复习计划`)
+        })
+        .catch(() => {})
     }
   }
 }
@@ -856,6 +927,12 @@ export default {
       color: #f56c6c;
     }
   }
+
+  .overviewHeaderActions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
 }
 
 .overviewBody {
@@ -916,6 +993,11 @@ export default {
 
   .colCycle {
     min-width: 82px;
+  }
+
+  .colAction {
+    width: 60px;
+    white-space: nowrap;
   }
 
   .overviewNodeText {

@@ -7,6 +7,7 @@ import { applyClozeStyles } from './cloze'
 
 let mindMapRef = null
 let currentAiInstance = null
+let currentFilePath = ''
 
 const VERSIONS_STORAGE_KEY = 'smm_cloze_versions'
 
@@ -14,6 +15,14 @@ const VERSIONS_STORAGE_KEY = 'smm_cloze_versions'
 export const initAiCloze = mindMap => {
   mindMapRef = mindMap
 }
+
+// 设置当前文件路径（供自动保存版本用）
+export const setClozeFilePath = filePath => {
+  currentFilePath = filePath || ''
+}
+
+// 获取当前文件路径
+const getMindMapFilePath = () => currentFilePath
 
 // 停止当前正在进行的 AI 挖空请求
 export const stopAiCloze = () => {
@@ -367,6 +376,110 @@ const callAiForCloze = (config, nodes, mode, onProgress) => {
   })
 }
 
+// 批量并行调用 AI 获取挖空结果（动态并发 + 自动降级）
+// 根据节点数量智能分配并发数，遇到限流/错误时自动降级重试
+const BATCH_SIZE = 12
+const callAiForClozeBatched = async (config, nodes, mode, onProgress) => {
+  if (nodes.length <= BATCH_SIZE) {
+    return callAiForCloze(config, nodes, mode, onProgress)
+  }
+  // 分批
+  const batches = []
+  for (let i = 0; i < nodes.length; i += BATCH_SIZE) {
+    batches.push(nodes.slice(i, i + BATCH_SIZE))
+  }
+  console.log(`[AI挖空] 共 ${nodes.length} 个节点，分为 ${batches.length} 批`)
+
+  // 动态计算初始并发数：节点越多并发越高，上限 15
+  const initialConcurrency = Math.min(Math.max(Math.ceil(batches.length / 2), 3), 15)
+  let currentConcurrency = initialConcurrency
+  let consecutiveErrors = 0
+  console.log(`[AI挖空] 初始并发数: ${currentConcurrency}`)
+
+  const results = []
+  let completedCount = 0
+  let batchIdx = 0
+
+  while (batchIdx < batches.length) {
+    const chunk = batches.slice(batchIdx, batchIdx + currentConcurrency)
+    const chunkPromises = chunk.map(batch => {
+      return callAiForCloze(config, batch, mode)
+        .then(r => ({ success: true, data: r }))
+        .catch(e => ({ success: false, error: e, data: [] }))
+    })
+    const chunkResults = await Promise.all(chunkPromises)
+
+    // 检查本批是否有错误
+    let hasError = false
+    let hasRateLimit = false
+    const failedBatches = []
+
+    chunkResults.forEach((r, i) => {
+      if (r.success) {
+        results.push(...r.data)
+      } else {
+        hasError = true
+        const errMsg = (r.error && r.error.message) || ''
+        console.error(`[AI挖空] 批次 ${batchIdx + i + 1} 失败:`, errMsg)
+        // 检测限流错误（429 / rate limit / too many requests）
+        if (errMsg.includes('429') || errMsg.toLowerCase().includes('rate') || errMsg.toLowerCase().includes('too many')) {
+          hasRateLimit = true
+        }
+        failedBatches.push(chunk[i])
+      }
+      completedCount++
+      if (onProgress) {
+        onProgress(`已完成 ${completedCount}/${batches.length} 批（并发${currentConcurrency}）`)
+      }
+    })
+
+    // 自动降级：遇到限流或连续错误时降低并发数
+    if (hasRateLimit) {
+      currentConcurrency = Math.max(Math.floor(currentConcurrency / 2), 1)
+      consecutiveErrors = 0
+      console.log(`[AI挖空] 检测到限流，降级并发数到 ${currentConcurrency}`)
+      // 限流时等待 1 秒再继续
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      // 重试失败的批次
+      for (const fb of failedBatches) {
+        try {
+          const retryResult = await callAiForCloze(config, fb, mode)
+          results.push(...retryResult)
+        } catch (e2) {
+          console.error('[AI挖空] 重试批次仍然失败:', e2)
+        }
+      }
+    } else if (hasError) {
+      consecutiveErrors++
+      if (consecutiveErrors >= 2) {
+        currentConcurrency = Math.max(Math.floor(currentConcurrency / 2), 1)
+        consecutiveErrors = 0
+        console.log(`[AI挖空] 连续错误，降级并发数到 ${currentConcurrency}`)
+      }
+      // 非限流错误也重试一次
+      for (const fb of failedBatches) {
+        try {
+          const retryResult = await callAiForCloze(config, fb, mode)
+          results.push(...retryResult)
+        } catch (e2) {
+          console.error('[AI挖空] 重试批次仍然失败:', e2)
+        }
+      }
+    } else {
+      // 成功时缓慢恢复并发数
+      consecutiveErrors = 0
+      if (currentConcurrency < initialConcurrency) {
+        currentConcurrency = Math.min(currentConcurrency + 1, initialConcurrency)
+      }
+    }
+
+    batchIdx += chunk.length
+  }
+
+  console.log(`[AI挖空] 全部完成，共获取 ${results.length} 条挖空结果`)
+  return results
+}
+
 // 将挖空结果应用到思维导图节点
 const applyClozeList = clozeList => {
   if (!mindMapRef || !mindMapRef.renderer || !mindMapRef.renderer.root) return
@@ -390,14 +503,15 @@ const applyClozeList = clozeList => {
 
 // 核心挖空执行：传入节点信息数组，调用 AI 并应用挖空
 // 只使用智能挖空（不再有激进兜底模式）
-const doSmartCloze = async (config, nodes, onProgress) => {
+// isFullDocument: 是否对整张图挖空（用于自动保存版本）
+const doSmartCloze = async (config, nodes, onProgress, isFullDocument) => {
   if (!nodes || nodes.length === 0) {
     throw new Error('没有可挖空的节点')
   }
   let clozeList = []
-  // 调用智能挖空
+  // 调用智能挖空（批量并行）
   try {
-    clozeList = await callAiForCloze(config, nodes, 'smart', onProgress)
+    clozeList = await callAiForClozeBatched(config, nodes, 'smart', onProgress)
   } catch (e) {
     console.error('[AI挖空] 请求失败:', e)
     // 直接抛出真实错误（网络/API/配置错误）
@@ -417,6 +531,27 @@ const doSmartCloze = async (config, nodes, onProgress) => {
     )
   }
   applyClozeList(clozeList)
+  // 对整张图挖空时自动保存版本
+  if (isFullDocument) {
+    try {
+      const versions = getClozeVersions()
+      // 生成递增版本名：挖空001、挖空002...
+      let maxNum = 0
+      versions.forEach(v => {
+        const m = /^挖空(\d+)$/.exec(v.name || '')
+        if (m) maxNum = Math.max(maxNum, parseInt(m[1]))
+      })
+      const versionName = `挖空${String(maxNum + 1).padStart(3, '0')}`
+      const savedVersion = saveClozeVersion(versionName, getMindMapFilePath())
+      console.log('[AI挖空] 自动保存版本:', versionName)
+      // 通知 Toolbar 刷新版本列表并提示
+      if (window.$bus) {
+        window.$bus.$emit('cloze_auto_saved', savedVersion)
+      }
+    } catch (e) {
+      console.error('[AI挖空] 自动保存版本失败:', e)
+    }
+  }
   return clozeList.length
 }
 
@@ -432,15 +567,15 @@ export const smartCloze = (config, onProgress) => {
   if (activeNodes.length > 0) {
     const nodes = extractNodesFromList(activeNodes)
     if (nodes.length > 0) {
-      return doSmartCloze(config, nodes, onProgress)
+      return doSmartCloze(config, nodes, onProgress, false)
     }
   }
-  // 没有选中节点时，对整个思维导图挖空
+  // 没有选中节点时，对整个思维导图挖空（isFullDocument = true，触发自动保存版本）
   const nodes = extractNodes()
   if (nodes.length === 0) {
     return Promise.reject(new Error('思维导图为空，无法挖空'))
   }
-  return doSmartCloze(config, nodes, onProgress, 'smart')
+  return doSmartCloze(config, nodes, onProgress, true)
 }
 
 // 对指定节点进行 AI 智能挖空（右键菜单/框选节点用）
@@ -456,7 +591,7 @@ export const smartClozeNodes = (config, nodeList, onProgress) => {
   if (nodes.length === 0) {
     return Promise.reject(new Error('选中的节点没有可挖空的文本内容'))
   }
-  return doSmartCloze(config, nodes, onProgress, 'smart')
+  return doSmartCloze(config, nodes, onProgress, false)
 }
 
 // 清除所有节点的挖空标记

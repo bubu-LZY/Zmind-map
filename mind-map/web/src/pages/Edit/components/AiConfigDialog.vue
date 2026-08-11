@@ -58,6 +58,17 @@
           </div>
         </el-form-item>
         <p class="desc examples">{{ $t('ai.configExamples') }}</p>
+        <!-- 二开：深度思考模式开关 -->
+        <el-form-item label="深度思考">
+          <div class="thinkingRow">
+            <el-switch
+              v-model="ruleForm.enableThinking"
+              active-color="#13ce66"
+              inactive-color="#dcdfe6"
+            ></el-switch>
+            <span class="thinkingTip">开启后AI会先深度推理再回复（兼容Qwen/DeepSeek/OpenAI o系列/GLM等）</span>
+          </div>
+        </el-form-item>
       </el-form>
     </div>
     <div slot="footer" class="dialog-footer">
@@ -98,7 +109,9 @@ export default {
         key: '',
         model: '',
         // 二开：可用模型列表（与 aiConfig.modelList 同步）
-        modelList: []
+        modelList: [],
+        // 二开：深度思考模式开关
+        enableThinking: false
       },
       rules: {
         api: [
@@ -158,6 +171,9 @@ export default {
           const list = Array.isArray(this.aiConfig.modelList) ? this.aiConfig.modelList.slice() : []
           this.ruleForm.modelList = list
           this.modelOptions = list.slice()
+        } else if (key === 'enableThinking') {
+          // 二开：布尔值需要特殊处理（false || '' 会返回 ''）
+          this.ruleForm.enableThinking = !!this.aiConfig.enableThinking
         } else {
           this.ruleForm[key] = this.aiConfig[key] || ''
         }
@@ -309,6 +325,18 @@ export default {
       &.examples {
         white-space: pre-line;
         line-height: 1.8;
+      }
+    }
+
+    .thinkingRow {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+
+      .thinkingTip {
+        font-size: 12px;
+        color: #909090;
+        line-height: 1.4;
       }
     }
 

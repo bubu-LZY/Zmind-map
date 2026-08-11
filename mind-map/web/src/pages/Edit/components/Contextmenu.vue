@@ -84,7 +84,14 @@
         :class="{ disabled: isGeneralization }"
       >
         <span class="name">{{ $t('contextmenu.copyNode') }}</span>
+      </div>
+      <!-- 二开：复制纯文本 / 复制标签文本 -->
+      <div class="item" @click="copyNodeText('plain')">
+        <span class="name">复制纯文本</span>
         <span class="desc">Ctrl + C</span>
+      </div>
+      <div class="item" @click="copyNodeText('html')">
+        <span class="name">复制标签文本</span>
       </div>
       <div
         class="item"
@@ -509,6 +516,44 @@ export default {
           break
       }
       this.hide()
+    },
+
+    // 二开：复制节点文本（纯文本 / 标签文本）
+    // plain = 去除 HTML 标签的纯文本；html = 保留富文本标签
+    async copyNodeText(type) {
+      const nodes = this.selectedNodes
+      if (!nodes || nodes.length === 0) return
+      this.hide()
+      try {
+        let str = ''
+        if (type === 'plain') {
+          str = nodes
+            .map(n => {
+              const raw = n.getData('text') || ''
+              return getTextFromHtml(raw).replace(/&nbsp;/g, ' ').trim()
+            })
+            .filter(t => t)
+            .join('\n')
+        } else {
+          str = nodes
+            .map(n => n.getData('text') || '')
+            .filter(t => t)
+            .join('\n')
+        }
+        if (!str) {
+          this.$message.warning('节点内容为空')
+          return
+        }
+        if (this.enableCopyToClipboardApi) {
+          setDataToClipboard(str)
+        } else {
+          copy(str)
+        }
+        this.$message.success(type === 'plain' ? '已复制纯文本' : '已复制标签文本')
+      } catch (error) {
+        console.log(error)
+        this.$message.error('复制失败')
+      }
     },
 
     // 复制到剪贴板

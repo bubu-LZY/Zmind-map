@@ -418,8 +418,9 @@ function layout() {
   }
   // 备注
   if (this._noteData) {
+    // 二开：备注图标靠近文本（往左偏移，消除图标SVG左侧空白，缩短约2/3视觉距离）
     this._noteData.node
-      .x(textContentOffsetX)
+      .x(textContentOffsetX - Math.floor(this._noteData.width * 0.35))
       .y((textContentHeight - this._noteData.height) / 2)
     textContentNested.add(this._noteData.node)
     textContentOffsetX += this._noteData.width + textContentMargin

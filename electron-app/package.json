@@ -1,6 +1,6 @@
 {
   "name": "mindmap-mubu",
-  "version": "1.4.48",
+  "version": "1.4.50",
   "description": "该程序由LZY使用AI工具根据思绪思维导图进行二创",
   "main": "main.js",
   "author": "local",

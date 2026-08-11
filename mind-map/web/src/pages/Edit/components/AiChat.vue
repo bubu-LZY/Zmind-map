@@ -44,9 +44,22 @@
           <div class="chatItemInner" v-else-if="item.type === 'ai'">
             <div class="content" v-if="item.showRaw" v-html="escapeHtml(item.content_raw)"></div>
             <div class="content" v-else v-html="item.content"></div>
+            <!-- 二开：思维导图模式操作按钮（插入子节点 / 替换节点 / 显示原文） -->
+            <div class="mmActionRow" v-if="item.isMindMap && item.content_raw">
+              <div class="mmActionBtn" v-if="!isCreating" @click="insertAsChild(item)" title="将思维导图插入为某节点的子节点（保留原子节点）">
+                <span class="el-icon-bottom"></span> 插入子节点
+              </div>
+              <div class="mmActionBtn" v-if="!isCreating" @click="replaceNodeContent(item)" title="用思维导图替换某节点及其子节点">
+                <span class="el-icon-refresh"></span> 替换节点
+              </div>
+              <div class="rawToggleBtn" @click="toggleRaw(item)">
+                {{ item.showRaw ? '显示解析' : '显示原文' }}
+              </div>
+            </div>
+            <!-- 非思维导图模式的显示原文按钮 -->
             <div
               class="rawToggleBtn"
-              v-if="item.content_raw && hasMarkdown(item.content_raw)"
+              v-if="!item.isMindMap && item.content_raw && hasMarkdown(item.content_raw)"
               @click="toggleRaw(item)"
             >
               {{ item.showRaw ? '显示解析' : '显示原文' }}
@@ -71,6 +84,17 @@
             <span class="el-icon-document-copy"></span>
             {{ syncedMarkdown ? '已同步' : '同步文档' }}
           </el-button>
+          <!-- 二开：思维导图生成模式开关 -->
+          <el-button
+            class="actionBtn"
+            :class="{ synced: mindMapMode }"
+            size="mini"
+            @click="toggleMindMapMode"
+            :title="mindMapMode ? '已开启思维导图生成，点击关闭' : '开启后AI按思维导图格式回复'"
+          >
+            <span class="el-icon-share"></span>
+            {{ mindMapMode ? '导图已开' : '思维导图' }}
+          </el-button>
           <el-button
             class="actionBtn"
             size="mini"
@@ -94,12 +118,14 @@
             trigger="click"
             placement="top"
             @command="switchModel"
-            :disabled="!modelList || modelList.length === 0"
+            @visible-change="onModelDropdownVisible"
+            :disabled="!aiConfig || !aiConfig.api || !aiConfig.key"
           >
             <el-button
               class="actionBtn modelSwitchBtn"
               size="mini"
-              :title="modelList && modelList.length ? '切换模型' : '请先在AI配置中检测模型'"
+              :loading="modelDetecting"
+              :title="modelList && modelList.length ? '切换模型' : '点击自动检测可用模型'"
             >
               <span class="el-icon-cpu"></span>
               <span class="modelSwitchName">{{ currentModelName || '未配置模型' }}</span>
@@ -114,6 +140,12 @@
               >
                 <span class="el-icon-check" v-if="m === currentModelName"></span>
                 {{ m }}
+              </el-dropdown-item>
+              <el-dropdown-item v-if="modelDetecting" disabled>
+                <span class="el-icon-loading"></span> 检测模型中...
+              </el-dropdown-item>
+              <el-dropdown-item v-if="!modelDetecting && (!modelList || modelList.length === 0)" disabled>
+                <span style="color:#999">未检测到模型，请检查AI配置</span>
               </el-dropdown-item>
             </el-dropdown-menu>
           </el-dropdown>
@@ -155,6 +187,17 @@
         ></textarea>
         <!-- 二开：输入提示移到输入框内（textarea 下方） -->
         <div class="inputHintInline">Enter 发送 · Shift+Enter 换行 · Ctrl+V 粘贴图片</div>
+        <!-- 二开：深度思考开关（发送按钮左侧） -->
+        <el-button
+          class="actionBtn thinkToggleBtn"
+          :class="{ active: chatThinking }"
+          size="mini"
+          @click="chatThinking = !chatThinking"
+          :title="chatThinking ? '已开启深度思考，点击关闭' : '开启深度思考模式'"
+        >
+          <span class="el-icon-magic-stick"></span>
+          {{ chatThinking ? '思考已开' : '深度思考' }}
+        </el-button>
         <el-button class="btn" size="mini" @click="send" :loading="isCreating">
           {{ $t('ai.send') }}
           <span class="el-icon-position"></span>
@@ -224,6 +267,7 @@
 import Sidebar from './Sidebar.vue'
 import { mapState, mapMutations } from 'vuex'
 import { createUid } from 'simple-mind-map/src/utils'
+import { transformMarkdownTo } from 'simple-mind-map/src/parse/markdownTo'
 import MarkdownIt from 'markdown-it'
 
 let md = null
@@ -252,7 +296,13 @@ export default {
       syncDocSent: false,
       pasteImages: [],
       // 二开：引用的节点列表（从右键"将节点添加到AI对话"添加）
-      referencedNodes: []
+      referencedNodes: [],
+      // 二开：模型自动检测中状态
+      modelDetecting: false,
+      // 二开：思维导图生成模式（AI按markdown格式回复并实时渲染为树）
+      mindMapMode: false,
+      // 二开：深度思考开关（本次对话是否启用深度思考）
+      chatThinking: false
     }
   },
   computed: {
@@ -380,6 +430,63 @@ export default {
       if (!model || model === this.currentModelName) return
       this.setLocalConfig({ model })
       this.$message.success('已切换模型：' + model)
+    },
+
+    // 二开：下拉菜单展开时，如果没有模型列表则自动检测
+    onModelDropdownVisible(visible) {
+      if (visible && (!this.modelList || this.modelList.length === 0)) {
+        this.fetchModelsForChat()
+      }
+    },
+
+    // 二开：自动检测可用模型列表（在AI对话窗口直接调用，无需打开AI配置弹窗）
+    async fetchModelsForChat() {
+      if (!this.aiConfig || !this.aiConfig.api || !this.aiConfig.key) {
+        this.$message.warning('请先配置AI接口地址和Key')
+        return
+      }
+      // 已有模型列表则不重复检测
+      if (this.modelList && this.modelList.length > 0) return
+      this.modelDetecting = true
+      try {
+        let modelsUrl = this.aiConfig.api.replace(/\/+$/, '')
+        if (modelsUrl.includes('/chat/completions')) {
+          modelsUrl = modelsUrl.replace('/chat/completions', '/models')
+        } else {
+          const urlObj = new URL(modelsUrl)
+          const pathParts = urlObj.pathname.split('/').filter(Boolean)
+          if (pathParts.length > 0) {
+            pathParts[pathParts.length - 1] = 'models'
+            urlObj.pathname = '/' + pathParts.join('/')
+            modelsUrl = urlObj.toString()
+          }
+        }
+        const res = await fetch(modelsUrl, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer ' + this.aiConfig.key }
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = await res.json()
+        let models = []
+        if (data.data && Array.isArray(data.data)) {
+          models = data.data.map(m => m.id).filter(Boolean)
+        } else if (Array.isArray(data.models)) {
+          models = data.models.map(m => (typeof m === 'string' ? m : m.id || m.name)).filter(Boolean)
+        } else if (Array.isArray(data)) {
+          models = data.map(m => (typeof m === 'string' ? m : m.id || m.name)).filter(Boolean)
+        }
+        models = models.sort()
+        this.setLocalConfig({ modelList: models })
+        if (models.length > 0) {
+          this.$message.success(`检测到 ${models.length} 个可用模型`)
+        } else {
+          this.$message.warning('未检测到可用模型，请在AI配置中手动输入')
+        }
+      } catch (error) {
+        this.$message.error('获取模型列表失败：' + (error.message || '未知错误'))
+      } finally {
+        this.modelDetecting = false
+      }
     },
 
     // 二开：一键复制消息内容（含图片时一并复制图片到剪贴板）
@@ -543,6 +650,18 @@ export default {
         this.syncDocSent = true
       }
 
+      // 二开：思维导图生成模式 - 在消息前加思维导图格式指令
+      const useMindMap = this.mindMapMode
+      if (useMindMap) {
+        fullText =
+          '请根据以下内容生成思维导图，使用 markdown 格式输出。格式要求：\n' +
+          '1. 第一行以 # 开头作为根节点标题\n' +
+          '2. 子节点使用 - 开头的缩进列表，每级缩进 2 个空格\n' +
+          '3. 可以有任意层级\n' +
+          '4. 只输出 markdown 内容，不要包含任何解释、代码块标记或额外文字\n\n' +
+          '内容：' + fullText
+      }
+
       const historyUserMsgList = this.chatList
         .filter(item => {
           return item.type === 'user'
@@ -560,7 +679,9 @@ export default {
       this.chatList.push({
         id: createUid(),
         type: 'ai',
-        content: ''
+        content: '',
+        isMindMap: useMindMap,
+        _lastRender: 0
       })
       this.isCreating = true
       this.saveCurrentConversation()
@@ -591,14 +712,21 @@ export default {
         'ai_chat',
         textList,
         res => {
-          if (!md) {
-            md = new MarkdownIt()
-          }
           const lastMsg = this.chatList[this.chatList.length - 1]
           if (lastMsg) {
             // res 是完整累积文本（非增量），直接赋值
             lastMsg.content_raw = res
-            lastMsg.content = md.render(res)
+            if (lastMsg.isMindMap) {
+              // 思维导图模式：节流渲染树预览（避免流式频繁解析卡顿）
+              const now = Date.now()
+              if (now - (lastMsg._lastRender || 0) > 400) {
+                lastMsg._lastRender = now
+                lastMsg.content = this.renderMindMapTree(res)
+              }
+            } else {
+              if (!md) md = new MarkdownIt()
+              lastMsg.content = md.render(res)
+            }
           }
           this.$refs.chatResBoxRef.scrollTop =
             this.$refs.chatResBoxRef.scrollHeight
@@ -607,6 +735,11 @@ export default {
         },
         () => {
           this.isCreating = false
+          // 最终渲染（确保思维导图树完整显示）
+          const lastMsg = this.chatList[this.chatList.length - 1]
+          if (lastMsg && lastMsg.isMindMap && lastMsg.content_raw) {
+            lastMsg.content = this.renderMindMapTree(lastMsg.content_raw)
+          }
           this.saveCurrentConversation()
         },
         error => {
@@ -627,13 +760,90 @@ export default {
             this.$message.error(this.$t('ai.generationFailed'))
           }
           this.saveCurrentConversation()
-        }
+        },
+        // 二开：深度思考模式开关（本次对话是否启用深度思考）
+        { enableThinking: this.chatThinking }
       )
     },
 
     stop() {
       this.$bus.$emit('ai_chat_stop')
       this.isCreating = false
+    },
+
+    // 二开：切换思维导图生成模式
+    toggleMindMapMode() {
+      this.mindMapMode = !this.mindMapMode
+      if (this.mindMapMode) {
+        this.$message.success('已开启思维导图生成模式，AI将按思维导图格式回复')
+      } else {
+        this.$message.info('已关闭思维导图生成模式')
+      }
+    },
+
+    // 二开：将AI生成的思维导图插入为某节点的子节点
+    insertAsChild(item) {
+      if (!item.content_raw) return
+      this.$bus.$emit('zmind_ai_mindmap_pick', {
+        mode: 'insert',
+        markdown: item.content_raw
+      })
+      this.$message.info('请点击要插入子节点的目标节点位置')
+      // 关闭侧边栏以便点击画布节点
+      this.$store.commit('setActiveSidebar', '')
+    },
+
+    // 二开：用AI生成的思维导图替换某节点及其子节点
+    replaceNodeContent(item) {
+      if (!item.content_raw) return
+      this.$bus.$emit('zmind_ai_mindmap_pick', {
+        mode: 'replace',
+        markdown: item.content_raw
+      })
+      this.$message.info('请点击要替换的目标节点位置')
+      this.$store.commit('setActiveSidebar', '')
+    },
+
+    // 二开：将AI返回的markdown渲染为思维导图树形HTML预览
+    renderMindMapTree(markdown) {
+      try {
+        const clean = (markdown || '')
+          .replace(/<think>[\s\S]*?<\/think>/gi, '')
+          .replace(/<think>[\s\S]*/gi, '')
+          .trim()
+        if (!clean) return '<div class="mmEmpty">生成中...</div>'
+        const tree = transformMarkdownTo(clean)
+        if (!tree) return '<div class="mmEmpty">等待思维导图内容...</div>'
+        return '<div class="mmTree">' + this.treeToHtml(tree, 0) + '</div>'
+      } catch (e) {
+        return '<div class="mmEmpty">解析中...</div>'
+      }
+    },
+
+    // 递归将树数据转为HTML
+    treeToHtml(node, depth) {
+      if (!node || !node.data) return ''
+      const rawText = node.data.text || ''
+      const text = String(rawText)
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .trim()
+      const rootCls = depth === 0 ? ' mmRoot' : ''
+      let html =
+        '<div class="mmNode' +
+        rootCls +
+        '"><span class="mmText">' +
+        this.escapeHtml(text) +
+        '</span>'
+      if (node.children && node.children.length > 0) {
+        html += '<div class="mmChildren">'
+        node.children.forEach(child => {
+          html += this.treeToHtml(child, depth + 1)
+        })
+        html += '</div>'
+      }
+      html += '</div>'
+      return html
     },
 
     clear() {
@@ -1169,7 +1379,7 @@ export default {
         margin-bottom: 0;
       }
 
-      // 二开：hover 时显示复制/重新询问按钮
+      // 二开：hover 时高亮复制/重新询问按钮
       &:hover {
         .msgCopyBtn,
         .resendBtn {
@@ -1243,7 +1453,7 @@ export default {
           }
         }
 
-        // 二开：右上角一键复制按钮（hover 显示）
+        // 二开：右上角一键复制按钮（半透明显示，hover 高亮）
         .msgCopyBtn {
           position: absolute;
           right: 6px;
@@ -1253,17 +1463,18 @@ export default {
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 13px;
-          color: #b0b0b0;
+          font-size: 14px;
+          color: #909399;
           cursor: pointer;
           border-radius: 4px;
-          opacity: 0;
+          opacity: 0.45;
           transition: all 0.2s;
           z-index: 2;
 
           &:hover {
             color: #409eff;
             background-color: #ecf5ff;
+            opacity: 1;
           }
         }
 
@@ -1642,6 +1853,94 @@ export default {
 </style>
 
 <style lang="less">
+/* 二开：思维导图预览树（v-html 渲染，需放在非 scoped 样式中） */
+.mmTree {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.mmNode {
+  padding: 2px 0 2px 4px;
+  position: relative;
+}
+.mmNode.mmRoot {
+  font-weight: bold;
+  font-size: 14px;
+  color: #0984e3;
+  margin-bottom: 4px;
+}
+.mmNode.mmRoot .mmText {
+  background: rgba(9, 132, 227, 0.1);
+}
+.mmChildren {
+  margin-left: 14px;
+  padding-left: 12px;
+  border-left: 1.5px dashed #bbb;
+}
+.mmNode .mmText {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.mmEmpty {
+  color: #999;
+  font-style: italic;
+  padding: 8px 0;
+}
+/* 思维导图操作按钮行 */
+.mmActionRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.mmActionBtn {
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 4px;
+  background: #f0f5ff;
+  color: #0984e3;
+  cursor: pointer;
+  border: 1px solid #d6e4ff;
+  user-select: none;
+  transition: all 0.15s;
+}
+.mmActionBtn:hover {
+  background: #0984e3;
+  color: #fff;
+  border-color: #0984e3;
+}
+/* 深度思考按钮激活态 */
+.thinkToggleBtn.active {
+  background: #6c5ce7 !important;
+  color: #fff !important;
+  border-color: #6c5ce7 !important;
+}
+/* 暗黑模式适配 */
+.aiChatBox.isDark {
+  .mmNode.mmRoot {
+    color: #74b9ff;
+  }
+  .mmNode.mmRoot .mmText {
+    background: rgba(116, 185, 255, 0.12);
+  }
+  .mmChildren {
+    border-left-color: #555;
+  }
+  .mmActionBtn {
+    background: #2d3a4a;
+    color: #74b9ff;
+    border-color: #3d4a5a;
+  }
+  .mmActionBtn:hover {
+    background: #0984e3;
+    color: #fff;
+  }
+  .mmEmpty {
+    color: #777;
+  }
+}
+
 .aiHistoryDialog {
   border-radius: 12px;
   overflow: hidden;

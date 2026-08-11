@@ -120,6 +120,30 @@ export function removeById(id) {
   saveReviewPlan(list)
 }
 
+// 按 filePath 获取该文件的复习计划列表
+export function getReviewPlanByFile(filePath) {
+  if (!filePath) return []
+  return getReviewPlan().filter(item => item.filePath === filePath)
+}
+
+// 按 filePath 删除该文件的所有复习计划（删除文件时同步清理），返回删除数量
+export function removeFromReviewPlanByFile(filePath) {
+  if (!filePath) return 0
+  const list = getReviewPlan()
+  const filtered = list.filter(item => item.filePath !== filePath)
+  const removed = list.length - filtered.length
+  if (removed > 0) saveReviewPlan(filtered)
+  return removed
+}
+
+// 清除所有已完成的复习计划（所有周期都已完成）
+export function removeAllCompleted() {
+  const list = getReviewPlan()
+  const filtered = list.filter(item => !item.cycles.every(c => c.completed))
+  saveReviewPlan(filtered)
+  return list.length - filtered.length
+}
+
 // 检查节点是否已在复习计划中
 export function isInReviewPlan(nodeUid) {
   return getReviewPlan().some(item => item.nodeUid === nodeUid)

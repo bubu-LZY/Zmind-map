@@ -133,6 +133,19 @@
           </div>
         </el-tooltip>
       </div>
+      <!-- 一键刷新 -->
+      <div class="toolbarBlock">
+        <el-tooltip
+          effect="dark"
+          content="一键刷新视图（修复显示异常）"
+          placement="bottom"
+        >
+          <div class="toolbarBtn" @click="refreshView">
+            <span class="icon el-icon-refresh-right"></span>
+            <span class="text">刷新</span>
+          </div>
+        </el-tooltip>
+      </div>
       <!-- 保存挖空版本弹窗 -->
       <el-dialog
         title="保存挖空版本"
@@ -193,6 +206,7 @@ import { throttle, isMobile } from 'simple-mind-map/src/utils/index'
 import { toggleAllCloze, isClozeHiddenAll } from '@/utils/cloze'
 import {
   initAiCloze,
+  setClozeFilePath,
   smartCloze,
   smartClozeNodes,
   clearAllCloze,
@@ -306,6 +320,7 @@ export default {
     // 文件切换时刷新挖空版本列表（只显示当前文件的版本）
     currentFilePath() {
       this.clozeVersions = getClozeVersions(this.currentFilePath || '')
+      setClozeFilePath(this.currentFilePath || '')
     }
   },
   created() {
@@ -320,10 +335,12 @@ export default {
     this.$bus.$on('node_note_dblclick', this.onNodeNoteDblclick)
     // 挖空版本管理初始化（只显示当前文件的版本）
     this.clozeVersions = getClozeVersions(this.currentFilePath || '')
+    setClozeFilePath(this.currentFilePath || '')
     this.$bus.$on('setData', this.onDataChange)
     this.$bus.$on('node_tree_render_end', this.onRenderEnd)
     this.$bus.$on('ai_smart_cloze_nodes', this.onSmartClozeNodes)
     this.$bus.$on('ai_recite_rewrite_nodes', this.onReciteRewriteNodes)
+    this.$bus.$on('cloze_auto_saved', this.onClozeAutoSaved)
   },
   beforeDestroy() {
     this.$bus.$off('write_local_file', this.onWriteLocalFile)
@@ -335,6 +352,7 @@ export default {
     this.$bus.$off('node_tree_render_end', this.onRenderEnd)
     this.$bus.$off('ai_smart_cloze_nodes', this.onSmartClozeNodes)
     this.$bus.$off('ai_recite_rewrite_nodes', this.onReciteRewriteNodes)
+    this.$bus.$off('cloze_auto_saved', this.onClozeAutoSaved)
   },
   methods: {
     // 切换复习模式
@@ -344,6 +362,12 @@ export default {
       } else {
         this.$bus.$emit('enter_review_mode')
       }
+    },
+
+    // 一键刷新视图
+    refreshView() {
+      this.$bus.$emit('zmind_refresh_view')
+      this.$message.success('已刷新视图')
     },
 
     // 计算工具按钮如何显示
@@ -614,6 +638,18 @@ export default {
         this.clozeVersions = deleteClozeVersion(versionId).filter(v => v.filePath === (this.currentFilePath || ''))
         this.$message.success('已删除')
       }).catch(() => {})
+    },
+
+    // AI挖空自动保存版本后的回调
+    onClozeAutoSaved(version) {
+      this.clozeVersions = getClozeVersions(this.currentFilePath || '')
+      this.refreshClozeContent()
+      this.$notify({
+        title: '挖空版本已自动保存',
+        message: `本次挖空内容已自动保存为「${version.name}」，可在挖空版本中查看或恢复`,
+        type: 'success',
+        duration: 5000
+      })
     },
 
     // 格式化版本时间
